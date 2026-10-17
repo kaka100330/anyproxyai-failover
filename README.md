@@ -91,12 +91,12 @@ client ── model: deepseek-v4.1-flash ──▶ ┌ 优先级 0  官方直连
 
 | 协议 | 路径 |
 | --- | --- |
-| OpenAI | `POST /v1/chat/completions`、`/v1/completions`、`/v1/embeddings`、`/v1/images/generations`、`/v1/audio/*` |
-| OpenAI 兼容 | `GET /v1/models` |
-| Anthropic | `POST /anthropic/v1/messages` |
-| Claude Code | `POST /claude-code/v1/messages` |
-| Gemini | `POST /gemini/v1beta/models/:model` |
-| Cursor | `POST /cursor/v1/chat/completions` |
+| OpenAI | `POST /api/v1/chat/completions`、`/api/v1/completions`、`/api/v1/embeddings`、`/api/v1/images/generations`、`/api/v1/audio/*` |
+| OpenAI 兼容 | `GET /api/models`、`GET /api/v1/models` |
+| Anthropic | `POST /api/anthropic/v1/messages` |
+| Claude Code | `POST /api/claudecode/v1/messages` |
+| Gemini | `POST /api/gemini/completions`、`POST /api/gemini/v1beta/models/:model` |
+| Cursor | `POST /api/cursor/v1/chat/completions` |
 | 健康检查 | `GET /health` |
 
 ---
