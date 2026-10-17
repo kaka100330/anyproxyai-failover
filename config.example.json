@@ -6,5 +6,11 @@
   "redirect_enabled": false,
   "redirect_keyword": "proxy_auto",
   "redirect_target_model": "",
-  "redirect_target_name": ""
+  "redirect_target_name": "",
+  "redirect_target_route_id": 0,
+  "redirect_target_group_id": 0,
+  "minimize_to_tray": true,
+  "auto_start": false,
+  "enable_file_log": false,
+  "language": "zh-CN"
 }
