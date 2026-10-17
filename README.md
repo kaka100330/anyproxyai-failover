@@ -95,7 +95,7 @@ client ── model: deepseek-v4.1-flash ──▶ ┌ 优先级 0  官方直连
 | OpenAI 兼容 | `GET /api/models`、`GET /api/v1/models` |
 | Anthropic | `POST /api/anthropic/v1/messages` |
 | Claude Code | `POST /api/claudecode/v1/messages` |
-| Gemini | `POST /api/gemini/completions`、`POST /api/gemini/v1beta/models/:model` |
+| Gemini | `POST /api/gemini/completions`、`POST /api/gemini/:model` |
 | Cursor | `POST /api/cursor/v1/chat/completions` |
 | 健康检查 | `GET /health` |
 
