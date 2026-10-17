@@ -1,0 +1,59 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+build/bin/
+# Keep build config files but ignore generated files
+!build/
+!build/windows/
+!build/config.yml
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Config
+config.json
+
+# Dependency directories
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Wails
+wailsjs/
+frontend/wailsjs/
+nul
+doc/cc-switch
+doc/code-switch
+
+# rsrc generated resource
+rsrc_*.syso
+
+# Python
+__pycache__/
+*.pyc

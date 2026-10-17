@@ -1,0 +1,106 @@
+# Implementation Plan
+
+- [x] 1. 准备工作和项目配置
+  - [x] 1.1 创建托盘图标资源文件
+    - 创建 assets 目录
+    - 复制或创建 icon.png 和 icon-dark.png 托盘图标
+    - _Requirements: 7.3_
+  - [x] 1.2 创建 Wails v3 构建配置文件
+    - 创建 build/config.yml 文件
+    - 配置应用名称、描述、版本等信息
+    - _Requirements: 1.4, 7.1_
+  - [x] 1.3 更新 go.mod 依赖
+    - 移除 energye/systray 依赖
+    - 添加 wails/v3 依赖
+    - 运行 go mod tidy
+    - _Requirements: 1.1_
+
+- [x] 2. Checkpoint - 确保依赖配置正确
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 3. 重写 main.go 使用 Wails v3
+  - [x] 3.1 创建 AppService 结构体
+    - 定义 AppService 结构体包含所有服务引用
+    - 实现 SetApp 方法用于设置应用引用
+    - _Requirements: 1.2_
+  - [x] 3.2 实现 Wails v3 应用初始化
+    - 使用 application.New() 创建应用
+    - 注册 AppService 作为 Wails v3 Service
+    - 配置 Assets 使用 embed.FS
+    - _Requirements: 1.1, 1.2, 7.2_
+  - [x] 3.3 实现主窗口创建
+    - 使用 app.Window.NewWithOptions() 创建主窗口
+    - 配置窗口尺寸 1280x800，最小尺寸 600x300
+    - 配置背景颜色和 URL
+    - _Requirements: 3.1, 3.2_
+  - [x] 3.4 实现系统托盘功能
+    - 使用 app.SystemTray.New() 创建托盘
+    - 设置托盘图标和深色模式图标
+    - 创建托盘菜单（显示主窗口、退出）
+    - 实现托盘点击事件
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
+  - [x] 3.5 实现窗口关闭行为
+    - 注册 WindowClosing 事件钩子
+    - 实现最小化到托盘逻辑
+    - _Requirements: 2.6, 3.4_
+  - [x] 3.6 保持 HTTP API 服务器启动逻辑
+    - 在 goroutine 中启动 Gin 服务器
+    - 保持端口检查逻辑
+    - _Requirements: 4.1_
+
+- [x] 4. 迁移 AppService 方法
+  - [x] 4.1 迁移路由管理方法
+    - 迁移 GetRoutes, AddRoute, UpdateRoute, DeleteRoute 方法
+    - 保持方法签名和返回格式不变
+    - _Requirements: 6.3_
+  - [x] 4.2 迁移统计方法
+    - 迁移 GetStats, GetDailyStats, GetHourlyStats, GetModelRanking 方法
+    - 保持方法签名和返回格式不变
+    - _Requirements: 6.4_
+  - [x] 4.3 迁移配置方法
+    - 迁移 GetConfig, UpdateConfig, UpdateLocalApiKey 方法
+    - 保持方法签名和返回格式不变
+    - _Requirements: 6.1_
+  - [x] 4.4 迁移应用设置方法
+    - 迁移 GetAppSettings, SetMinimizeToTray, SetAutoStart, SetEnableFileLog 方法
+    - 保持方法签名和返回格式不变
+    - _Requirements: 5.1, 5.2, 5.3, 5.4_
+  - [x] 4.5 迁移窗口控制方法
+    - 通过托盘菜单和事件钩子实现窗口控制
+    - _Requirements: 2.4, 2.5_
+  - [x] 4.6 迁移其他方法
+    - 迁移 FetchRemoteModels, ImportRouteFromFormat, ClearStats 方法
+    - 保持方法签名和返回格式不变
+    - _Requirements: 4.6_
+
+- [x] 5. 前端兼容层
+  - [x] 5.1 创建 Wails v3 兼容 shim
+    - 创建 frontend/src/wails-shim.js
+    - 映射 window.go.main.App.* 到 Wails v3 Call.ByName API
+  - [x] 5.2 更新前端依赖
+    - 添加 @wailsio/runtime 依赖
+    - 在 main.js 中导入 wails-shim.js
+
+- [ ] 6. 清理旧代码 (可选)
+  - [ ] 6.1 删除旧的系统托盘代码
+    - 删除 internal/system/systray_windows.go
+    - 删除 internal/system/systray_stub.go
+    - _Requirements: 2.1_
+  - [ ] 6.2 更新 internal/system 包
+    - 保留 autostart_*.go 文件
+    - 保留 dialog_*.go 文件
+    - _Requirements: 5.1, 5.2, 5.3_
+
+- [ ] 7. 验证和测试
+  - [ ] 7.1 验证构建
+    - 运行 go build 确保编译通过
+    - 测试应用启动和基本功能
+  - [ ] 7.2 验证 API 代理功能
+    - 测试 /api/v1/* OpenAI 格式请求
+    - 测试 /api/anthropic/* Claude 格式请求
+    - 测试 /api/claudecode/* Claude Code 格式请求
+    - 测试 /api/gemini/* Gemini 格式请求
+    - _Requirements: 4.2, 4.3, 4.4, 4.5_
+
+- [ ] 8. Final Checkpoint - 确保所有测试通过
+  - Ensure all tests pass, ask the user if questions arise.

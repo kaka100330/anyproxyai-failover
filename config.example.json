@@ -1,0 +1,10 @@
+{
+  "host": "localhost",
+  "port": 5642,
+  "database_path": "routes.db",
+  "local_api_key": "sk-local-default-key-change-me",
+  "redirect_enabled": false,
+  "redirect_keyword": "proxy_auto",
+  "redirect_target_model": "",
+  "redirect_target_name": ""
+}
