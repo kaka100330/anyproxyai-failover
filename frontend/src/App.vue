@@ -385,6 +385,7 @@
                           {{ g.enabled ? t('models.enabled') : t('models.disabled') }}
                         </n-tag>
                         <n-tag size="small">{{ g.endpoints.length }} {{ t('failover.endpointCount') }}</n-tag>
+                        <n-tag size="small" :type="strategyTagType(g.strategy)">{{ strategyLabel(g.strategy) }}</n-tag>
                         <n-tag size="small" type="warning">{{ t('failover.cooldown') }} {{ g.cooldown_seconds }}s</n-tag>
                         <n-tag v-if="coolingCount(g) > 0" size="small" type="error">
                           {{ t('failover.coolingCount', { n: coolingCount(g) }) }}
@@ -657,7 +658,7 @@
 
                   <n-space align="center">
                     <n-icon size="20"><InformationCircleIcon /></n-icon>
-                    <n-text>{{ t('settings.version') }}: v2.1.0</n-text>
+                    <n-text>{{ t('settings.version') }}: v2.2.0</n-text>
                   </n-space>
 
                   <n-space align="center">
@@ -1623,6 +1624,23 @@ const sortedEndpoints = (g) => {
 const coolingCount = (g) => {
   const list = g?.status?.endpoints || []
   return list.filter(s => s.cooling).length
+}
+
+// 分组策略展示
+const strategyLabel = (s) => {
+  switch (s) {
+    case 'balanced': return t('failover.strategyBalanced')
+    case 'polling': return t('failover.strategyPolling')
+    default: return t('failover.strategyFailover')
+  }
+}
+
+const strategyTagType = (s) => {
+  switch (s) {
+    case 'balanced': return 'success'
+    case 'polling': return 'info'
+    default: return 'default'
+  }
 }
 
 const isGroupRedirectTarget = (g) => redirectConfig.value.targetGroupId === g.id

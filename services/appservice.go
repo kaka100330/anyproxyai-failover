@@ -170,6 +170,7 @@ type FailoverGroupInfo struct {
 	Name            string       `json:"name"`
 	Model           string       `json:"model"`
 	CooldownSeconds int          `json:"cooldown_seconds"`
+	Strategy        string       `json:"strategy"`
 	Enabled         bool         `json:"enabled"`
 	Endpoints       []RouteInfo  `json:"endpoints"`
 	Status          interface{}  `json:"status"`
@@ -205,22 +206,24 @@ func (a *AppService) GetFailoverGroups() ([]FailoverGroupInfo, error) {
 			Name:            g.Name,
 			Model:           g.Model,
 			CooldownSeconds: g.CooldownSeconds,
+			Strategy:        g.Strategy,
 			Enabled:         g.Enabled,
 			Endpoints:       eps,
-			Status:          a.ProxyService.FailoverStatus(g.ID, g.CooldownSeconds),
+			Status:          a.ProxyService.FailoverStatus(g.ID, g.CooldownSeconds, g.Strategy),
 		})
 	}
 	return result, nil
 }
 
 // AddFailoverGroup 新建故障转移分组
-func (a *AppService) AddFailoverGroup(name, model string, cooldownSeconds int) (int64, error) {
-	return a.RouteService.AddFailoverGroup(name, model, cooldownSeconds)
+// strategy: failover（故障转移，默认）/ balanced（均衡负载）/ polling（轮询）
+func (a *AppService) AddFailoverGroup(name, model string, cooldownSeconds int, strategy string) (int64, error) {
+	return a.RouteService.AddFailoverGroup(name, model, cooldownSeconds, strategy)
 }
 
 // UpdateFailoverGroup 更新故障转移分组
-func (a *AppService) UpdateFailoverGroup(id int64, name, model string, cooldownSeconds int, enabled bool) error {
-	err := a.RouteService.UpdateFailoverGroup(id, name, model, cooldownSeconds, enabled)
+func (a *AppService) UpdateFailoverGroup(id int64, name, model string, cooldownSeconds int, strategy string, enabled bool) error {
+	err := a.RouteService.UpdateFailoverGroup(id, name, model, cooldownSeconds, strategy, enabled)
 	if err == nil {
 		a.ProxyService.ResetFailoverState(id)
 	}

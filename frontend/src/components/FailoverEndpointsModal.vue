@@ -8,7 +8,10 @@
   >
     <n-space vertical :size="12">
       <n-alert type="info" :show-icon="true" style="font-size: 13px;">
-        {{ t('failover.endpointsTip', { n: group?.cooldown_seconds || 600 }) }}
+        <n-space vertical :size="4">
+          <span>{{ t('failover.strategy') }}：{{ strategyLabel }}</span>
+          <span>{{ t('failover.endpointsTip', { n: group?.cooldown_seconds || 600 }) }}</span>
+        </n-space>
       </n-alert>
 
       <n-space justify="end">
@@ -101,6 +104,14 @@ const epRules = computed(() => ({
 const rows = computed(() => {
   const eps = props.group?.endpoints || []
   return [...eps].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.id - b.id)
+})
+
+const strategyLabel = computed(() => {
+  switch (props.group?.strategy) {
+    case 'balanced': return t('failover.strategyBalanced')
+    case 'polling': return t('failover.strategyPolling')
+    default: return t('failover.strategyFailover')
+  }
 })
 
 const statusOf = (ep) => {

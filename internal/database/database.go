@@ -26,11 +26,13 @@ type ModelRoute struct {
 }
 
 // FailoverGroup 故障转移分组：对外唯一 model id，组内端点按 priority 顺序尝试
+// Strategy 决定组内端点的选择方式：failover=按优先级故障转移 / balanced=随机均衡负载 / polling=轮询
 type FailoverGroup struct {
 	ID              int64     `json:"id"`
 	Name            string    `json:"name"`
 	Model           string    `json:"model"`
 	CooldownSeconds int       `json:"cooldown_seconds"`
+	Strategy        string    `json:"strategy"`
 	Enabled         bool      `json:"enabled"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -123,6 +125,7 @@ func createTables(db *sql.DB) error {
 		name TEXT NOT NULL,
 		model TEXT NOT NULL,
 		cooldown_seconds INTEGER DEFAULT 600,
+		strategy TEXT DEFAULT 'failover',
 		enabled INTEGER DEFAULT 1,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -212,6 +215,9 @@ func migrateDB(db *sql.DB) error {
 	db.Exec(`ALTER TABLE model_routes ADD COLUMN format TEXT DEFAULT 'openai'`)
 	db.Exec(`ALTER TABLE model_routes ADD COLUMN failover_group_id INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE model_routes ADD COLUMN priority INTEGER DEFAULT 0`)
+
+	// 分组策略（failover / balanced / polling），旧库默认故障转移
+	db.Exec(`ALTER TABLE failover_groups ADD COLUMN strategy TEXT DEFAULT 'failover'`)
 
 	db.Exec(`ALTER TABLE hourly_stats ADD COLUMN success_count INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE hourly_stats ADD COLUMN fail_count INTEGER DEFAULT 0`)

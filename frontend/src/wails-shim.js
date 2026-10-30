@@ -41,10 +41,10 @@ const createWailsShim = () => {
 
     // Failover groups
     GetFailoverGroups: () => callService('GetFailoverGroups'),
-    AddFailoverGroup: (name, model, cooldownSeconds) =>
-      callService('AddFailoverGroup', name, model, cooldownSeconds),
-    UpdateFailoverGroup: (id, name, model, cooldownSeconds, enabled) =>
-      callService('UpdateFailoverGroup', id, name, model, cooldownSeconds, enabled),
+    AddFailoverGroup: (name, model, cooldownSeconds, strategy) =>
+      callService('AddFailoverGroup', name, model, cooldownSeconds, strategy || 'failover'),
+    UpdateFailoverGroup: (id, name, model, cooldownSeconds, strategy, enabled) =>
+      callService('UpdateFailoverGroup', id, name, model, cooldownSeconds, strategy || 'failover', enabled),
     DeleteFailoverGroup: (id) => callService('DeleteFailoverGroup', id),
     AddFailoverEndpoint: (groupID, name, apiUrl, apiKey, format) =>
       callService('AddFailoverEndpoint', groupID, name, apiUrl, apiKey, format),

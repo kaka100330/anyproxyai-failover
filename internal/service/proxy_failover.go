@@ -60,7 +60,8 @@ func (s *ProxyService) resolveTargets(model string) (*routeResolution, error) {
 	return &routeResolution{Targets: []*database.ModelRoute{route}, Model: route.Model}, nil
 }
 
-// resolveGroupTargets 生成分组候选端点列表（跳过冷却中的端点）
+// resolveGroupTargets 生成分组候选端点列表（跳过冷却中的端点），并按分组策略排序
+// failover=按优先级 / balanced=随机均衡 / polling=轮询
 func (s *ProxyService) resolveGroupTargets(group *database.FailoverGroup) (*routeResolution, error) {
 	endpoints, err := s.routeService.GetFailoverEndpoints(group.ID, true)
 	if err != nil {
@@ -76,25 +77,25 @@ func (s *ProxyService) resolveGroupTargets(group *database.FailoverGroup) (*rout
 	}
 	cooling := s.failover.Begin(group.ID, cooldown)
 
-	targets := make([]*database.ModelRoute, 0, len(endpoints))
+	available := make([]*database.ModelRoute, 0, len(endpoints))
+	all := make([]*database.ModelRoute, 0, len(endpoints))
 	for i := range endpoints {
-		if cooling[endpoints[i].ID] {
-			continue
-		}
 		ep := endpoints[i]
 		ep.Model = group.Model
-		targets = append(targets, &ep)
-	}
-
-	if len(targets) == 0 {
-		// 全部端点都在冷却：按优先级兜底，避免整个分组不可用
-		log.Warnf("[Failover] group %s: all endpoints cooling, falling back to priority order", group.Name)
-		for i := range endpoints {
-			ep := endpoints[i]
-			ep.Model = group.Model
-			targets = append(targets, &ep)
+		all = append(all, &ep)
+		if !cooling[endpoints[i].ID] {
+			available = append(available, &ep)
 		}
 	}
+
+	pool := available
+	if len(pool) == 0 {
+		// 全部端点都在冷却：按优先级兜底，避免整个分组不可用
+		log.Warnf("[Failover] group %s: all endpoints cooling, falling back to priority order", group.Name)
+		pool = all
+	}
+
+	targets := s.failover.OrderEndpoints(group.ID, group.Strategy, pool)
 
 	return &routeResolution{Group: group, Targets: targets, Model: group.Model}, nil
 }
@@ -145,7 +146,7 @@ func (s *ProxyService) doWithFailover(res *routeResolution, attempt func(target 
 }
 
 // FailoverStatus 返回指定分组的冷却状态（供 UI 展示）
-func (s *ProxyService) FailoverStatus(groupID int64, cooldownSeconds int) FailoverGroupStatus {
+func (s *ProxyService) FailoverStatus(groupID int64, cooldownSeconds int, strategy string) FailoverGroupStatus {
 	eps, err := s.routeService.GetFailoverEndpoints(groupID, true)
 	if err != nil {
 		eps = nil
@@ -154,7 +155,7 @@ func (s *ProxyService) FailoverStatus(groupID int64, cooldownSeconds int) Failov
 	if cooldown <= 0 {
 		cooldown = 600 * time.Second
 	}
-	return s.failover.Status(groupID, cooldown, eps)
+	return s.failover.Status(groupID, cooldown, strategy, eps)
 }
 
 // ResetFailoverState 端点或分组变更后清空冷却状态

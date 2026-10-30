@@ -18,6 +18,13 @@
         </template>
       </n-form-item>
 
+      <n-form-item :label="t('failover.strategy')" path="strategy">
+        <n-select v-model:value="form.strategy" :options="strategyOptions" style="width: 240px;" />
+        <template #feedback>
+          <span style="color: #888; font-size: 12px;">{{ strategyHint }}</span>
+        </template>
+      </n-form-item>
+
       <n-form-item :label="t('failover.cooldown')" path="cooldown">
         <n-input-number v-model:value="form.cooldown" :min="1" :step="10" style="width: 200px;">
           <template #suffix>{{ t('failover.seconds') }}</template>
@@ -63,7 +70,21 @@ const showModal = computed({
 const isEdit = computed(() => !!(props.group && props.group.id))
 const formRef = ref(null)
 const saving = ref(false)
-const form = ref({ name: '', model: '', cooldown: 600, enabled: true })
+const form = ref({ name: '', model: '', strategy: 'failover', cooldown: 600, enabled: true })
+
+const strategyOptions = computed(() => [
+  { label: t('failover.strategyFailover'), value: 'failover' },
+  { label: t('failover.strategyBalanced'), value: 'balanced' },
+  { label: t('failover.strategyPolling'), value: 'polling' }
+])
+
+const strategyHint = computed(() => {
+  switch (form.value.strategy) {
+    case 'balanced': return t('failover.strategyBalancedDesc')
+    case 'polling': return t('failover.strategyPollingDesc')
+    default: return t('failover.strategyFailoverDesc')
+  }
+})
 
 const rules = computed(() => ({
   name: { required: true, message: t('failover.groupNamePlaceholder'), trigger: ['blur', 'input'] },
@@ -76,11 +97,12 @@ watch(() => props.visible, (v) => {
     form.value = {
       name: props.group.name || '',
       model: props.group.model || '',
+      strategy: props.group.strategy || 'failover',
       cooldown: props.group.cooldown_seconds || 600,
       enabled: props.group.enabled !== false
     }
   } else {
-    form.value = { name: '', model: '', cooldown: 600, enabled: true }
+    form.value = { name: '', model: '', strategy: 'failover', cooldown: 600, enabled: true }
   }
   formRef.value?.restoreValidation()
 })
@@ -95,10 +117,13 @@ const handleSubmit = async () => {
   try {
     if (isEdit.value) {
       await window.go.main.App.UpdateFailoverGroup(
-        props.group.id, form.value.name, form.value.model, form.value.cooldown, form.value.enabled
+        props.group.id, form.value.name, form.value.model, form.value.cooldown,
+        form.value.strategy, form.value.enabled
       )
     } else {
-      await window.go.main.App.AddFailoverGroup(form.value.name, form.value.model, form.value.cooldown)
+      await window.go.main.App.AddFailoverGroup(
+        form.value.name, form.value.model, form.value.cooldown, form.value.strategy
+      )
     }
     emit('saved')
     showModal.value = false

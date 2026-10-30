@@ -10,10 +10,19 @@ Everything from upstream is kept: OpenAI / Claude / Gemini / Claude Code / Curso
 
 A group is **one public model id** plus **N upstream endpoints** (URL + key + format) ordered by `priority`.
 
-- The gateway tries endpoints in priority order and falls through on failure.
+Each group picks one **strategy**:
+
+| Strategy | Value | Behavior |
+| --- | --- | --- |
+| **Failover** (default) | `failover` | Strict priority order; falls through only on failure |
+| **Balanced** | `balanced` | Picks a random *available* endpoint per request; still falls through on failure |
+| **Polling** | `polling` | Rotates through *available* endpoints in priority order; still falls through on failure |
+
+All three share the same cooldown / fallthrough / fallback logic — only the first pick differs.
+
 - Failover triggers on: network errors / timeouts, HTTP `5xx`, HTTP `401`/`403`.
 - No failover on `429` or other `4xx` — those are returned to the client as-is.
-- Cooldown is per group (default `600s`) and **sliding**: every request to the group re-arms the timer, so a failing endpoint stays skipped while traffic continues, and the group returns to the highest priority only after the group has been idle for the whole cooldown.
+- Cooldown is per group (default `600s`) and **sliding**: every request to the group resets the timer to the full cooldown, so a failing endpoint stays skipped while traffic continues, and becomes available again only after the group has been idle for the whole cooldown. The remaining time shown in the UI slides the same way.
 - If every endpoint is cooling, the group retries them in priority order rather than failing outright.
 - `proxy_auto` (or your custom keyword) can redirect to a failover group **or** to a single ungrouped route.
 - Ungrouped routes behave exactly as upstream: random load balancing across routes sharing a model.
