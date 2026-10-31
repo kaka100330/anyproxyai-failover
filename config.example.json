@@ -12,5 +12,6 @@
   "minimize_to_tray": true,
   "auto_start": false,
   "enable_file_log": false,
+  "sanitize_thinking": true,
   "language": "zh-CN"
 }

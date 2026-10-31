@@ -708,6 +708,13 @@
                     {{ t('settings.enableFileLogDesc') }}
                   </n-text>
 
+                  <n-checkbox v-model:checked="settings.sanitizeThinking" @update:checked="toggleSanitizeThinking">
+                    {{ t('settings.sanitizeThinking') }}
+                  </n-checkbox>
+                  <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
+                    {{ t('settings.sanitizeThinkingDesc') }}
+                  </n-text>
+
                   <!-- API 端口设置 -->
                   <div style="margin-top: 16px;">
                     <n-text depth="2" style="font-size: 14px; margin-bottom: 8px; display: block;">{{ t('settings.apiPort') }}</n-text>
@@ -1002,6 +1009,7 @@ const settings = ref({
   autoStart: false,
   minimizeToTray: false,
   enableFileLog: false,
+  sanitizeThinking: true,
   port: 5642,
 })
 
@@ -1101,6 +1109,21 @@ const toggleEnableFileLog = async (enabled) => {
   } catch (error) {
     showMessage("error", t('messages.settingFailed') + ': ' + error)
     settings.value.enableFileLog = !enabled // 恢复状态
+  }
+}
+
+// 切换响应净化（修复上游把思维链/工具调用写进正文）
+const toggleSanitizeThinking = async (enabled) => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  try {
+    await window.go.main.App.SetSanitizeThinking(enabled)
+    showMessage("success", enabled ? t('settings.sanitizeThinkingEnabled') : t('settings.sanitizeThinkingDisabled'))
+  } catch (error) {
+    showMessage("error", t('messages.settingFailed') + ': ' + error)
+    settings.value.sanitizeThinking = !enabled // 恢复状态
   }
 }
 
@@ -2048,6 +2071,7 @@ const loadConfig = async () => {
     settings.value.minimizeToTray = data.minimizeToTray || false
     settings.value.autoStart = data.autoStart || false
     settings.value.enableFileLog = data.enableFileLog || false
+    settings.value.sanitizeThinking = data.sanitizeThinking !== false
     settings.value.port = data.port || 5642
     console.log('Config loaded:', config.value)
   } catch (error) {

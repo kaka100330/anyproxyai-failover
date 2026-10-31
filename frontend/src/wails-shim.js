@@ -74,6 +74,7 @@ const createWailsShim = () => {
     SetMinimizeToTray: (enabled) => callService('SetMinimizeToTray', enabled),
     SetAutoStart: (enabled) => callService('SetAutoStart', enabled),
     SetEnableFileLog: (enabled) => callService('SetEnableFileLog', enabled),
+    SetSanitizeThinking: (enabled) => callService('SetSanitizeThinking', enabled),
     
     // Remote models
     FetchRemoteModels: (apiUrl, apiKey) => callService('FetchRemoteModels', apiUrl, apiKey),

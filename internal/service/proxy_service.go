@@ -1,9 +1,10 @@
-﻿package service
+package service
 
 import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -179,52 +180,80 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 	var adapterName string
 	startTime := time.Now()
 
-	resp, route, ferr := s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
-		cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
-		adapterName = s.detectAdapterForRoute(target, requestFormat)
-
-		var transformedBody []byte
-		var targetURL string
-		if adapterName != "" {
-			adapter := adapters.GetAdapter(adapterName)
-			if adapter == nil {
-				return nil, fmt.Errorf("adapter not found: %s", adapterName)
-			}
-			transformedReq, aerr := adapter.AdaptRequest(reqData, model)
-			if aerr != nil {
-				return nil, aerr
-			}
-			transformedBody, _ = json.Marshal(transformedReq)
-			targetURL = s.buildAdapterURL(cleanAPIUrl, adapterName, model)
-		} else {
-			transformedBody = requestBody
-			targetURL = buildOpenAIChatURL(target.APIUrl)
-		}
-
-		log.Infof("[Proxy] %s -> %s (endpoint: %s, adapter: %s)", model, targetURL, target.Name, adapterName)
-
-		proxyReq, rerr := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
-		if rerr != nil {
-			return nil, rerr
-		}
-		proxyReq.Header.Set("Content-Type", "application/json")
-		if target.APIKey != "" {
-			proxyReq.Header.Set("Authorization", "Bearer "+target.APIKey)
-		} else if auth := headers["Authorization"]; auth != "" {
-			proxyReq.Header.Set("Authorization", auth)
-		}
-		return s.httpClient.Do(proxyReq)
-	})
-	if ferr != nil {
-		s.routeService.LogRequest(model, 0, 0, 0, 0, false, ferr.Error())
-		return nil, http.StatusServiceUnavailable, ferr
+	attempts := 1
+	if s.sanitizeThinkingEnabled() {
+		attempts = 2
 	}
-	defer resp.Body.Close()
 
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, err.Error())
-		return nil, http.StatusInternalServerError, err
+	var resp *http.Response
+	var responseBody []byte
+	var ferr error
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		adapterName = ""
+		resp, route, ferr = s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
+			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
+			adapterName = s.detectAdapterForRoute(target, requestFormat)
+
+			var transformedBody []byte
+			var targetURL string
+			if adapterName != "" {
+				adapter := adapters.GetAdapter(adapterName)
+				if adapter == nil {
+					return nil, fmt.Errorf("adapter not found: %s", adapterName)
+				}
+				transformedReq, aerr := adapter.AdaptRequest(reqData, model)
+				if aerr != nil {
+					return nil, aerr
+				}
+				transformedBody, _ = json.Marshal(transformedReq)
+				targetURL = s.buildAdapterURL(cleanAPIUrl, adapterName, model)
+			} else {
+				transformedBody = requestBody
+				targetURL = buildOpenAIChatURL(target.APIUrl)
+			}
+
+			log.Infof("[Proxy] %s -> %s (endpoint: %s, adapter: %s)", model, targetURL, target.Name, adapterName)
+
+			proxyReq, rerr := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
+			if rerr != nil {
+				return nil, rerr
+			}
+			proxyReq.Header.Set("Content-Type", "application/json")
+			if target.APIKey != "" {
+				proxyReq.Header.Set("Authorization", "Bearer "+target.APIKey)
+			} else if auth := headers["Authorization"]; auth != "" {
+				proxyReq.Header.Set("Authorization", auth)
+			}
+			return s.httpClient.Do(proxyReq)
+		})
+		if ferr != nil {
+			s.routeService.LogRequest(model, 0, 0, 0, 0, false, ferr.Error())
+			return nil, http.StatusServiceUnavailable, ferr
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, readErr.Error())
+			return nil, http.StatusInternalServerError, readErr
+		}
+		responseBody = body
+
+		// A response that carries its own reasoning as the assistant answer
+		// must not reach the client: repair it, and retry once.
+		if adapterName == "" && s.sanitizeThinkingEnabled() && resp.StatusCode == http.StatusOK {
+			out, serr := s.sanitizeNonStreamBody(body)
+			if serr != nil {
+				if attempt < attempts {
+					log.Warnf("[Sanitize] attempt %d was poisoned, retrying", attempt)
+					continue
+				}
+				return nil, http.StatusBadGateway, serr
+			}
+			responseBody = out
+		}
+		break
 	}
 
 	// 详细日志：记录返回结�?
@@ -357,65 +386,95 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 
 	var adapterName string
 
-	resp, route, ferr := s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
-		cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
-		adapterName = s.detectAdapterForRoute(target, requestFormat)
+	attempts := 1
+	if s.sanitizeThinkingEnabled() {
+		attempts = 2
+	}
 
-		var transformedBody []byte
-		var targetURL string
-		if adapterName != "" {
-			adapter := adapters.GetAdapter(adapterName)
-			if adapter == nil {
-				return nil, fmt.Errorf("adapter not found: %s", adapterName)
+	var resp *http.Response
+	var ferr error
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		adapterName = ""
+		resp, route, ferr = s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
+			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
+			adapterName = s.detectAdapterForRoute(target, requestFormat)
+
+			var transformedBody []byte
+			var targetURL string
+			if adapterName != "" {
+				adapter := adapters.GetAdapter(adapterName)
+				if adapter == nil {
+					return nil, fmt.Errorf("adapter not found: %s", adapterName)
+				}
+				reqData["stream"] = true
+				transformedReq, aerr := adapter.AdaptRequest(reqData, model)
+				if aerr != nil {
+					return nil, aerr
+				}
+				transformedBody, _ = json.Marshal(transformedReq)
+				targetURL = s.buildAdapterStreamURL(cleanAPIUrl, adapterName, model)
+			} else {
+				transformedBody = requestBody
+				targetURL = buildOpenAIChatURL(target.APIUrl)
 			}
-			reqData["stream"] = true
-			transformedReq, aerr := adapter.AdaptRequest(reqData, model)
-			if aerr != nil {
-				return nil, aerr
+
+			log.Infof("[Stream] %s -> %s (endpoint: %s, adapter: %s)", model, targetURL, target.Name, adapterName)
+
+			proxyReq, rerr := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
+			if rerr != nil {
+				return nil, rerr
 			}
-			transformedBody, _ = json.Marshal(transformedReq)
-			targetURL = s.buildAdapterStreamURL(cleanAPIUrl, adapterName, model)
-		} else {
-			transformedBody = requestBody
-			targetURL = buildOpenAIChatURL(target.APIUrl)
+			proxyReq.Header.Set("Content-Type", "application/json")
+			if target.APIKey != "" {
+				proxyReq.Header.Set("Authorization", "Bearer "+target.APIKey)
+			} else if auth := headers["Authorization"]; auth != "" {
+				proxyReq.Header.Set("Authorization", auth)
+			}
+			if adapterName == "anthropic" {
+				proxyReq.Header.Set("anthropic-version", "2023-06-01")
+			}
+			return s.httpClient.Do(proxyReq)
+		})
+		if ferr != nil {
+			return ferr
 		}
 
-		log.Infof("[Stream] %s -> %s (endpoint: %s, adapter: %s)", model, targetURL, target.Name, adapterName)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("backend error: %d - %s", resp.StatusCode, string(body))
+		}
 
-		proxyReq, rerr := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
-		if rerr != nil {
-			return nil, rerr
+		// Adapter paths keep their existing behaviour; the sanitizer only
+		// rewrites OpenAI-format SSE streams.
+		if adapterName != "" || !s.sanitizeThinkingEnabled() {
+			var streamErr error
+			if adapterName != "" {
+				streamErr = s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID)
+			} else {
+				streamErr = s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+			}
+			resp.Body.Close()
+			return streamErr
 		}
-		proxyReq.Header.Set("Content-Type", "application/json")
-		if target.APIKey != "" {
-			proxyReq.Header.Set("Authorization", "Bearer "+target.APIKey)
-		} else if auth := headers["Authorization"]; auth != "" {
-			proxyReq.Header.Set("Authorization", auth)
+
+		streamErr := s.streamDirectSanitized(resp.Body, writer, flusher, model, route.ID, attempt > 1)
+		resp.Body.Close()
+		if streamErr == nil {
+			return nil
 		}
-		if adapterName == "anthropic" {
-			proxyReq.Header.Set("anthropic-version", "2023-06-01")
+		if errors.Is(streamErr, errThinkAsContent) {
+			if attempt < attempts {
+				log.Warnf("[Sanitize] stream attempt %d was poisoned, retrying", attempt)
+				continue
+			}
+			writeThinkAsContentError(writer, flusher)
+			return streamErr
 		}
-		return s.httpClient.Do(proxyReq)
-	})
-	if ferr != nil {
-		return ferr
+		return streamErr
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("backend error: %d - %s", resp.StatusCode, string(body))
-	}
-
-	// 流式传输响应
-	// 使用实际路由到的模型名（model）用于统�?
-	if adapterName != "" {
-		// 需要转换SSE�?
-		return s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID)
-	} else {
-		// 直接转发SSE�?
-		return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
-	}
+	return nil
 }
 
 // ProxyStreamRequestWithAdapter 代理流式请求，使用指定的适配�?

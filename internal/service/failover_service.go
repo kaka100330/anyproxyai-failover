@@ -437,6 +437,26 @@ func (m *FailoverManager) MarkFailed(groupID, endpointID int64) {
 	log.Warnf("[Failover] endpoint %d in group %d marked as failed (cooldown timer armed)", endpointID, groupID)
 }
 
+// MarkSuccess 端点被证明可用时立刻解除其冷却标记，并重置该分组的活动时间。
+// 仅在"所有端点都在冷却、只能兜底重试"的场景下由成功请求调用：
+// 因为 Begin 会在每次请求时把冷却计时器重置为 now，若兜底命中的端点不清除冷却，
+// 分组将陷入"全部冷却 -> 每次都靠兜底调用 -> 冷却永不结束"的死循环。
+func (m *FailoverManager) MarkSuccess(groupID, endpointID int64) {
+	if groupID <= 0 || endpointID <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rt := m.runtime(groupID)
+	now := time.Now()
+	if _, ok := rt.failed[endpointID]; ok {
+		delete(rt.failed, endpointID)
+		log.Infof("[Failover] endpoint %d in group %d marked as recovered, cooldown cleared", endpointID, groupID)
+	}
+	rt.lastActivity = now
+}
+
 // Reset 清除分组的冷却与轮询状态（端点/分组被编辑后调用）
 func (m *FailoverManager) Reset(groupID int64) {
 	m.mu.Lock()

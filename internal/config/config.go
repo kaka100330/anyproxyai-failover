@@ -22,6 +22,7 @@ type Config struct {
 	MinimizeToTray        bool   `json:"minimize_to_tray"`
 	AutoStart             bool   `json:"auto_start"`
 	EnableFileLog         bool   `json:"enable_file_log"`
+	SanitizeThinking      bool   `json:"sanitize_thinking"`
 	Language              string `json:"language"`
 	configPath            string
 }
@@ -42,6 +43,7 @@ func LoadConfig() *Config {
 		MinimizeToTray:        true,
 		AutoStart:             false,
 		EnableFileLog:         false,
+		SanitizeThinking:      true,
 		Language:              "en-US",
 		configPath:            configPath,
 	}

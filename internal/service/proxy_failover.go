@@ -17,6 +17,9 @@ type routeResolution struct {
 	Group   *database.FailoverGroup // nil 表示普通（未分组）路由
 	Targets []*database.ModelRoute  // 按优先级排列的候选端点
 	Model   string                  // 上游实际使用的模型名
+	// AllCooling 表示分组内所有端点都处于冷却中，本次候选列表是把全部端点
+	// 按优先级兜底拿到的（并非真正"可用"）。成功命中任一端点即说明其已恢复。
+	AllCooling bool
 }
 
 // resolveTargets 解析请求模型对应的候选端点
@@ -89,15 +92,17 @@ func (s *ProxyService) resolveGroupTargets(group *database.FailoverGroup) (*rout
 	}
 
 	pool := available
+	allCooling := false
 	if len(pool) == 0 {
 		// 全部端点都在冷却：按优先级兜底，避免整个分组不可用
 		log.Warnf("[Failover] group %s: all endpoints cooling, falling back to priority order", group.Name)
 		pool = all
+		allCooling = true
 	}
 
 	targets := s.failover.OrderEndpoints(group.ID, group.Strategy, pool)
 
-	return &routeResolution{Group: group, Targets: targets, Model: group.Model}, nil
+	return &routeResolution{Group: group, Targets: targets, Model: group.Model, AllCooling: allCooling}, nil
 }
 
 // isFailoverStatus 判断该状态码是否应触发故障转移
@@ -131,6 +136,13 @@ func (s *ProxyService) doWithFailover(res *routeResolution, attempt func(target 
 				log.Warnf("[Failover] group=%s endpoint=%s returned %d, trying next", res.Group.Name, target.Name, resp.StatusCode)
 			}
 			continue
+		}
+
+		if res.Group != nil && res.AllCooling {
+			// 全端点冷却时的兜底重试居然成功了：说明该端点已恢复，立刻解除它的冷却，
+			// 否则冷却计时会被后续请求不断重置，导致端点永远显示"冷却"却每轮都在被调用。
+			s.failover.MarkSuccess(res.Group.ID, target.ID)
+			log.Infof("[Failover] group=%s endpoint=%s recovered from cooldown after fallback success", res.Group.Name, target.Name)
 		}
 
 		if i > 0 && res.Group != nil {

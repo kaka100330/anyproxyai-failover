@@ -84,6 +84,31 @@ client ── model: deepseek-v4.1-flash ──▶ ┌ 优先级 0  官方直连
 
 实测：同一分组 / 同一端点，3 路流式请求并发，总耗时等于单路耗时（而不是 3 倍）。
 
+## 3. 响应净化（修复 Think 被当作正文）
+
+一些 OpenAI 兼容上游（典型是"国模自动路由"这类聚合服务）在把原生 DeepSeek / Claude 输出转成 OpenAI 格式时会出错，产生三种畸形响应：
+
+| 形态 | 表现 | 对客户端的后果 |
+| --- | --- | --- |
+| 思维链进正文 | `content` 与 `reasoning_content` 逐字相同 | 正文是一大段推理，`tool_calls` 为空，`finish_reason=stop`，Agent 会把半截推理当成最终回答，本轮任务直接结束 |
+| `<thinking>` 标签未剥离 | `content` 以 `<thinking>…` 开头 | 推理内容显示在聊天正文里 |
+| DSML 工具调用泄漏 | `content` 里出现 `<｜｜DSML｜｜ invoke name="…">` | 工具调用失效，模型"说要调用"却什么都没发生 |
+
+本版内置净化层（`internal/sanitize`），在转发前识别并修复：
+
+- `content` 与 `reasoning_content` 完全相同 → 丢弃重复正文，只保留 reasoning；
+- 正文被 `<thinking>` 包裹 → 搬回 `reasoning_content`；
+- 正文中残留 DSML 调用 → 解析回真实 `tool_calls`，`finish_reason` 置为 `tool_calls`；
+- 流式与非流式都支持，修复后的思考内容不会重复下发；
+- **正常响应逐字节透传**，不改写、不重试、不增加延迟；
+- 只有确认异常才重试一次；两次都异常时返回 `THINK_AS_CONTENT` 错误，而不是伪造一个"最终回答"。
+
+开关在 **设置 → 修复思维链泄漏（Think as content）**，对应配置文件字段 `sanitize_thinking`，默认开启。旧配置缺该键时也按开启处理。
+
+> 只作用于 OpenAI 格式直连路径（无格式转换）。Claude / Gemini 适配器路径保持原行为。
+
+---
+
 ---
 
 ## 快速开始

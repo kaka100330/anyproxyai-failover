@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -176,6 +177,111 @@ func TestGroupStrategyOrdering(t *testing.T) {
 	}
 	if len(heads) < 2 {
 		t.Fatalf("balanced strategy should spread the first pick, got %v", heads)
+	}
+}
+
+// 可切换状态码的假上游（用于模拟端点恢复）
+func switchableUpstream(t *testing.T, status int32) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	code := &atomic.Int32{}
+	code.Store(status)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(int(code.Load()))
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, code
+}
+
+// 全端点冷却后的兜底重试一旦成功，必须立刻解除成功端点的冷却，
+// 否则 Begin() 会在每次请求时重置计时器，所有端点将永远停留在"冷却中"。
+func TestFallbackSuccessClearsCooldown(t *testing.T) {
+	rs, ps := newTestProxy(t)
+
+	badSrv, badCode := switchableUpstream(t, http.StatusInternalServerError)
+	flakySrv, flakyCode := switchableUpstream(t, http.StatusInternalServerError)
+	_ = badCode
+
+	const cooldownSeconds = 600
+	groupID, err := rs.AddFailoverGroup("兜底组", "model-fb", cooldownSeconds, StrategyFailover)
+	if err != nil {
+		t.Fatalf("add group: %v", err)
+	}
+	badID := addEndpoint(t, rs, groupID, "bad", badSrv.URL)
+	flakyID := addEndpoint(t, rs, groupID, "flaky", flakySrv.URL)
+
+	group, err := rs.GetFailoverGroupByID(groupID)
+	if err != nil {
+		t.Fatalf("get group: %v", err)
+	}
+
+	attempt := func(target *database.ModelRoute) (*http.Response, error) {
+		req, _ := http.NewRequest(http.MethodPost, target.APIUrl, strings.NewReader(`{}`))
+		return ps.httpClient.Do(req)
+	}
+
+	failOnce := func() {
+		res, err := ps.resolveGroupTargets(group)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		resp, _, err := ps.doWithFailover(res, attempt)
+		if err == nil {
+			resp.Body.Close()
+			t.Fatal("expected every endpoint to fail")
+		}
+	}
+
+	// 两轮全失败，让两个端点都进入冷却
+	failOnce()
+	failOnce()
+
+	status := ps.FailoverStatus(groupID, cooldownSeconds, group.Strategy)
+	if !coolingOf(status, badID) || !coolingOf(status, flakyID) {
+		t.Fatalf("both endpoints should be cooling, got bad=%v flaky=%v",
+			coolingOf(status, badID), coolingOf(status, flakyID))
+	}
+
+	// 第二个端点恢复
+	flakyCode.Store(http.StatusOK)
+
+	res, err := ps.resolveGroupTargets(group)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !res.AllCooling || len(res.Targets) != 2 {
+		t.Fatalf("expected all-cooling fallback over both endpoints, got allCooling=%v targets=%v",
+			res.AllCooling, ids(res.Targets))
+	}
+
+	resp, served, err := ps.doWithFailover(res, attempt)
+	if err != nil {
+		t.Fatalf("fallback request: %v", err)
+	}
+	resp.Body.Close()
+	if served == nil || served.ID != flakyID {
+		t.Fatalf("recovered endpoint should serve the request, got %+v", served)
+	}
+
+	status = ps.FailoverStatus(groupID, cooldownSeconds, group.Strategy)
+	if coolingOf(status, flakyID) {
+		t.Fatal("cooldown of the endpoint that just served a request must be cleared")
+	}
+	if !coolingOf(status, badID) {
+		t.Fatal("endpoints that still fail must stay cooling")
+	}
+
+	// 后续请求应直接命中已恢复端点，而不再走"全部冷却"兜底
+	res, err = ps.resolveGroupTargets(group)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if res.AllCooling {
+		t.Fatal("group must not be in all-cooling fallback any more")
+	}
+	if len(res.Targets) != 1 || res.Targets[0].ID != flakyID {
+		t.Fatalf("only the recovered endpoint should be a candidate, got %v", ids(res.Targets))
 	}
 }
 

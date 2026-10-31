@@ -168,6 +168,10 @@ export const setEnableFileLog = async (enabled: boolean): Promise<void> => {
   return callService<void>('SetEnableFileLog', enabled)
 }
 
+export const setSanitizeThinking = async (enabled: boolean): Promise<void> => {
+  return callService<void>('SetSanitizeThinking', enabled)
+}
+
 // Remote models
 export const fetchRemoteModels = async (apiUrl: string, apiKey: string): Promise<string[]> => {
   return callService<string[]>('FetchRemoteModels', apiUrl, apiKey)

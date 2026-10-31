@@ -38,6 +38,20 @@ The proxy path was already concurrent; the real bottleneck was SQLite logging (`
 
 Measured: three concurrent streaming requests through the same endpoint finish in the time of one.
 
+### 3. Response sanitizing (think-as-content repair)
+
+Some OpenAI-compatible upstreams mangle native DeepSeek/Claude output:
+
+| Symptom | What the client sees | Why it matters |
+| --- | --- | --- |
+| reasoning copied into content | `content` byte-identical to `reasoning_content` | no `tool_calls`, `finish_reason=stop` — an agent treats half a reasoning trace as the final answer and the turn ends |
+| raw `<thinking>` tags | `content` starts with `<thinking>…` | chain of thought shown as chat text |
+| DSML tool calls as text | `<｜｜DSML｜｜ invoke name="…">` inside `content` | tool calls never happen |
+
+The built-in sanitizer (`internal/sanitize`) repairs all three before forwarding: drops duplicated content, moves tagged text back into `reasoning_content`, and parses DSML back into real `tool_calls` (with `finish_reason=tool_calls`). It works for streaming and non-streaming, passes clean responses through untouched, retries once only when a response is provably broken, and fails loudly with `THINK_AS_CONTENT` instead of inventing an answer.
+
+Toggle: **Settings → Repair thinking leaks**, config key `sanitize_thinking` (default `true`). Only the OpenAI pass-through path is affected; Claude/Gemini adapter paths are unchanged.
+
 ## Quick start
 
 Download `anyproxyai-windows-amd64.exe` from [Releases](https://github.com/kaka100330/anyproxyai-failover/releases) and run it. It listens on `http://127.0.0.1:5642` and creates `config.json` / `routes.db` next to the executable.

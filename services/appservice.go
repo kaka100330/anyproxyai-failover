@@ -52,6 +52,7 @@ type ConfigInfo struct {
 	MinimizeToTray        bool   `json:"minimizeToTray"`
 	AutoStart             bool   `json:"autoStart"`
 	EnableFileLog         bool   `json:"enableFileLog"`
+	SanitizeThinking      bool   `json:"sanitizeThinking"`
 	Port                  int    `json:"port"`
 }
 
@@ -362,6 +363,7 @@ func (a *AppService) GetConfig() map[string]interface{} {
 		"minimizeToTray":        a.Config.MinimizeToTray,
 		"autoStart":             a.Config.AutoStart,
 		"enableFileLog":         a.Config.EnableFileLog,
+		"sanitizeThinking":      a.Config.SanitizeThinking,
 		"port":                  a.Config.Port,
 	}
 }
@@ -485,6 +487,19 @@ func (a *AppService) SetEnableFileLog(enabled bool) error {
 
 	// 注意：实际的日志文件启用/禁用逻辑在 main 包中处理
 	log.Info("File log setting updated successfully")
+	return nil
+}
+
+// SetSanitizeThinking 设置是否启用响应净化（把泄漏到正文里的思维链/DSML 工具调用还原）
+func (a *AppService) SetSanitizeThinking(enabled bool) error {
+	log.Infof("Setting sanitize thinking: %v", enabled)
+	a.Config.SanitizeThinking = enabled
+
+	if err := a.Config.Save(); err != nil {
+		log.Errorf("Failed to save config: %v", err)
+		return fmt.Errorf("failed to save config: %v", err)
+	}
+	log.Info("Sanitize thinking setting updated successfully")
 	return nil
 }
 
