@@ -1,0 +1,61 @@
+# 可选：Nginx 静态托管前端 + 反向代理 Go API
+#
+# 这样前端文件由 Nginx 直接提供，Go 进程只处理 /admin/api 与代理 API，
+# 是更彻底的前后端分离部署方式。
+#
+# 将本文件放到 /etc/nginx/sites-available/anyproxyai 并软链到 sites-enabled，
+# 把 root 改成实际的前端目录，然后 nginx -t && systemctl reload nginx。
+
+server {
+    listen 8080;
+    server_name _;
+
+    root /opt/anyproxyai/web;
+    index index.html;
+    client_max_body_size 64m;
+
+    # 登录页与登录接口由 Go 后端提供（需要设置 Cookie）
+    location = /login {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /admin/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # OpenAI / Anthropic 兼容代理 API；关闭缓冲以支持 SSE 流式响应
+    location /v1/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+    }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:3000;
+    }
+
+    # SPA 路由回退
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

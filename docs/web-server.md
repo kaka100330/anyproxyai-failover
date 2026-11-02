@@ -122,6 +122,18 @@ ssh -L 3000:127.0.0.1:3000 root@<服务器IP>
 
 如果确实需要直接公网访问，把 compose 的端口改成 `"0.0.0.0:3000:3000"`，并务必在前置 Nginx / Caddy 上配置 HTTPS 与访问控制；管理界面本身只有密码登录，不应长期裸奔在公网 HTTP 上。
 
+### 完全前后端分离（Nginx 静态托管）
+
+`deploy/nginx.conf.example` 提供了一个 Nginx 配置：Nginx 直接托管 `web/` 静态文件，只把 `/admin/`、`/v1/`、`/api/`、`/login` 反代给 Go 进程。这样静态资源不经过 Go，适合正式环境：
+
+```nginx
+root /opt/anyproxyai/web;
+location /v1/ { proxy_pass http://127.0.0.1:3000; proxy_buffering off; }
+location /admin/ { proxy_pass http://127.0.0.1:3000; }
+```
+
+Go 进程仍监听 `127.0.0.1:3000`，由 Nginx 监听公网端口。
+
 ## 5. 代理 API
 
 管理界面展示的地址形如 `http://127.0.0.1:3000`。客户端配置：
