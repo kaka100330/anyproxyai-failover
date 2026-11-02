@@ -84,7 +84,9 @@ func (s *ProxyService) resolveGroupTargets(group *database.FailoverGroup) (*rout
 	all := make([]*database.ModelRoute, 0, len(endpoints))
 	for i := range endpoints {
 		ep := endpoints[i]
-		ep.Model = group.Model
+		if strings.TrimSpace(ep.Model) == "" {
+			ep.Model = group.Model
+		}
 		all = append(all, &ep)
 		if !cooling[endpoints[i].ID] {
 			available = append(available, &ep)
@@ -173,4 +175,18 @@ func (s *ProxyService) FailoverStatus(groupID int64, cooldownSeconds int, strate
 // ResetFailoverState 端点或分组变更后清空冷却状态
 func (s *ProxyService) ResetFailoverState(groupID int64) {
 	s.failover.Reset(groupID)
+}
+
+// targetModelFor 返回一次上游尝试应使用的模型名。
+// 分组端点可选配置 upstream_model（例如把对外模型 gpt-6-luna 映射为上游 gpt-5.6-luna）。
+func targetModelFor(groupModel string, target *database.ModelRoute) string {
+	if target != nil {
+		if m := strings.TrimSpace(target.UpstreamModel); m != "" {
+			return m
+		}
+		if m := strings.TrimSpace(target.Model); m != "" {
+			return m
+		}
+	}
+	return groupModel
 }

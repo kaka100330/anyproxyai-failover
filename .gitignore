@@ -5,6 +5,8 @@
 *.so
 *.dylib
 build/bin/
+build/server/
+build/*.tar.gz
 # Keep build config files but ignore generated files
 !build/
 !build/windows/

@@ -18,6 +18,7 @@ type ModelRoute struct {
 	APIUrl          string    `json:"api_url"`
 	APIKey          string    `json:"api_key"`
 	Format          string    `json:"format"`            // 格式类型 (openai, claude, gemini)
+	UpstreamModel   string    `json:"upstream_model"`    // 分组内可选：上游实际模型名（留空则使用分组模型）
 	FailoverGroupID int64     `json:"failover_group_id"` // 0 = 未分组
 	Priority        int       `json:"priority"`          // 分组内优先级，越小越优先
 	Enabled         bool      `json:"enabled"`
@@ -140,6 +141,7 @@ func createTables(db *sql.DB) error {
 		api_url TEXT NOT NULL,
 		api_key TEXT,
 		format TEXT DEFAULT 'openai',
+		upstream_model TEXT DEFAULT '',
 		failover_group_id INTEGER DEFAULT 0,
 		priority INTEGER DEFAULT 0,
 		enabled INTEGER DEFAULT 1,
@@ -213,6 +215,7 @@ func createTables(db *sql.DB) error {
 // migrateDB 执行数据库迁移，确保表结构是最新的
 func migrateDB(db *sql.DB) error {
 	db.Exec(`ALTER TABLE model_routes ADD COLUMN format TEXT DEFAULT 'openai'`)
+	db.Exec(`ALTER TABLE model_routes ADD COLUMN upstream_model TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE model_routes ADD COLUMN failover_group_id INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE model_routes ADD COLUMN priority INTEGER DEFAULT 0`)
 

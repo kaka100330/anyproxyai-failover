@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [vue()],
+  base: mode === 'web' ? '/' : './',
   publicDir: 'public',
   build: {
     outDir: 'dist',
@@ -10,5 +11,10 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    proxy: mode === 'web'
+      ? {
+          '/admin': 'http://127.0.0.1:5642',
+        }
+      : undefined,
   },
-})
+}))

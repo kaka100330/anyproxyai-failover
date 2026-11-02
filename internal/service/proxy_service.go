@@ -194,6 +194,15 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 		resp, route, ferr = s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
 			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
 			adapterName = s.detectAdapterForRoute(target, requestFormat)
+			attemptModel := targetModelFor(model, target)
+			attemptReq := reqData
+			if attemptModel != model {
+				attemptReq = make(map[string]interface{}, len(reqData))
+				for k, v := range reqData {
+					attemptReq[k] = v
+				}
+				attemptReq["model"] = attemptModel
+			}
 
 			var transformedBody []byte
 			var targetURL string
@@ -202,18 +211,22 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 				if adapter == nil {
 					return nil, fmt.Errorf("adapter not found: %s", adapterName)
 				}
-				transformedReq, aerr := adapter.AdaptRequest(reqData, model)
+				transformedReq, aerr := adapter.AdaptRequest(attemptReq, attemptModel)
 				if aerr != nil {
 					return nil, aerr
 				}
 				transformedBody, _ = json.Marshal(transformedReq)
-				targetURL = s.buildAdapterURL(cleanAPIUrl, adapterName, model)
+				targetURL = s.buildAdapterURL(cleanAPIUrl, adapterName, attemptModel)
 			} else {
-				transformedBody = requestBody
+				if attemptModel != model {
+					transformedBody, _ = json.Marshal(attemptReq)
+				} else {
+					transformedBody = requestBody
+				}
 				targetURL = buildOpenAIChatURL(target.APIUrl)
 			}
 
-			log.Infof("[Proxy] %s -> %s (endpoint: %s, adapter: %s)", model, targetURL, target.Name, adapterName)
+			log.Infof("[Proxy] %s -> %s (endpoint: %s, adapter: %s, upstream_model: %s)", model, targetURL, target.Name, adapterName, attemptModel)
 
 			proxyReq, rerr := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
 			if rerr != nil {
@@ -399,6 +412,15 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 		resp, route, ferr = s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
 			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
 			adapterName = s.detectAdapterForRoute(target, requestFormat)
+			attemptModel := targetModelFor(model, target)
+			attemptReq := reqData
+			if attemptModel != model {
+				attemptReq = make(map[string]interface{}, len(reqData))
+				for k, v := range reqData {
+					attemptReq[k] = v
+				}
+				attemptReq["model"] = attemptModel
+			}
 
 			var transformedBody []byte
 			var targetURL string
@@ -407,19 +429,24 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 				if adapter == nil {
 					return nil, fmt.Errorf("adapter not found: %s", adapterName)
 				}
-				reqData["stream"] = true
-				transformedReq, aerr := adapter.AdaptRequest(reqData, model)
+				attemptReq["stream"] = true
+				transformedReq, aerr := adapter.AdaptRequest(attemptReq, attemptModel)
 				if aerr != nil {
 					return nil, aerr
 				}
 				transformedBody, _ = json.Marshal(transformedReq)
-				targetURL = s.buildAdapterStreamURL(cleanAPIUrl, adapterName, model)
+				targetURL = s.buildAdapterStreamURL(cleanAPIUrl, adapterName, attemptModel)
 			} else {
-				transformedBody = requestBody
+				if attemptModel != model {
+					attemptReq["stream"] = true
+					transformedBody, _ = json.Marshal(attemptReq)
+				} else {
+					transformedBody = requestBody
+				}
 				targetURL = buildOpenAIChatURL(target.APIUrl)
 			}
 
-			log.Infof("[Stream] %s -> %s (endpoint: %s, adapter: %s)", model, targetURL, target.Name, adapterName)
+			log.Infof("[Stream] %s -> %s (endpoint: %s, adapter: %s, upstream_model: %s)", model, targetURL, target.Name, adapterName, attemptModel)
 
 			proxyReq, rerr := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
 			if rerr != nil {

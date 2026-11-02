@@ -1,0 +1,19 @@
+[Unit]
+Description=AnyProxyAI failover gateway (proxy API + web console)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/anyproxyai
+EnvironmentFile=/opt/anyproxyai/anyproxyai.env
+ExecStart=/opt/anyproxyai/anyproxyai-server
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

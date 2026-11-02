@@ -263,6 +263,8 @@
     "editEndpoint": "Edit Endpoint",
     "endpointName": "Endpoint Name",
     "endpointNamePlaceholder": "e.g. official",
+    "upstreamModel": "Upstream Model",
+    "upstreamModelPlaceholder": "Blank = group model; e.g. gpt-5.6-luna",
     "priority": "Priority",
     "status": "Status",
     "active": "Active",

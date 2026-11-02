@@ -1,0 +1,27 @@
+services:
+  anyproxyai:
+    image: anyproxyai:2.4.0
+    container_name: anyproxyai
+    restart: unless-stopped
+    working_dir: /data
+    ports:
+      # 只监听本机；远程访问请用 SSH 隧道或在此前置 HTTPS 反向代理
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      ANYPROXY_HOST: 0.0.0.0
+      ANYPROXY_PORT: "3000"
+      ANYPROXY_DB: /data/routes.db
+      ANYPROXY_WEB_ROOT: /app/web
+      ANYPROXY_ADMIN_USER: ${ANYPROXY_ADMIN_USER:-admin}
+      ANYPROXY_ADMIN_PASSWORD: ${ANYPROXY_ADMIN_PASSWORD:?set ANYPROXY_ADMIN_PASSWORD in .env}
+      ANYPROXY_SESSION_SECRET: ${ANYPROXY_SESSION_SECRET:?set ANYPROXY_SESSION_SECRET in .env}
+      ANYPROXY_API_KEY: ${ANYPROXY_API_KEY:?set ANYPROXY_API_KEY in .env}
+      ANYPROXY_PUBLIC_BASE_URL: ${ANYPROXY_PUBLIC_BASE_URL:-http://127.0.0.1:3000}
+    networks:
+      - llmnet
+
+networks:
+  llmnet:
+    external: true

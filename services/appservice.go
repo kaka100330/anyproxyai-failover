@@ -21,6 +21,7 @@ type RouteInfo struct {
 	APIUrl          string `json:"api_url"`
 	APIKey          string `json:"api_key"`
 	Format          string `json:"format"`
+	UpstreamModel   string `json:"upstream_model"`
 	FailoverGroupID int64  `json:"failover_group_id"`
 	Priority        int    `json:"priority"`
 	Enabled         bool   `json:"enabled"`
@@ -141,6 +142,7 @@ func (a *AppService) GetRoutes() ([]RouteInfo, error) {
 			APIUrl:          route.APIUrl,
 			APIKey:          route.APIKey,
 			Format:          route.Format,
+			UpstreamModel:   route.UpstreamModel,
 			FailoverGroupID: route.FailoverGroupID,
 			Priority:        route.Priority,
 			Enabled:         route.Enabled,
@@ -167,14 +169,14 @@ func (a *AppService) UpdateRoute(id int64, name, model, apiUrl, apiKey, format s
 
 // FailoverGroupInfo 分组信息（用于前端）
 type FailoverGroupInfo struct {
-	ID              int64        `json:"id"`
-	Name            string       `json:"name"`
-	Model           string       `json:"model"`
-	CooldownSeconds int          `json:"cooldown_seconds"`
-	Strategy        string       `json:"strategy"`
-	Enabled         bool         `json:"enabled"`
-	Endpoints       []RouteInfo  `json:"endpoints"`
-	Status          interface{}  `json:"status"`
+	ID              int64       `json:"id"`
+	Name            string      `json:"name"`
+	Model           string      `json:"model"`
+	CooldownSeconds int         `json:"cooldown_seconds"`
+	Strategy        string      `json:"strategy"`
+	Enabled         bool        `json:"enabled"`
+	Endpoints       []RouteInfo `json:"endpoints"`
+	Status          interface{} `json:"status"`
 }
 
 // GetFailoverGroups 获取所有故障转移分组及其端点
@@ -195,6 +197,7 @@ func (a *AppService) GetFailoverGroups() ([]FailoverGroupInfo, error) {
 				APIUrl:          ep.APIUrl,
 				APIKey:          ep.APIKey,
 				Format:          ep.Format,
+				UpstreamModel:   ep.UpstreamModel,
 				FailoverGroupID: ep.FailoverGroupID,
 				Priority:        ep.Priority,
 				Enabled:         ep.Enabled,
@@ -242,9 +245,23 @@ func (a *AppService) DeleteFailoverGroup(id int64) error {
 
 // AddFailoverEndpoint 向分组添加端点
 func (a *AppService) AddFailoverEndpoint(groupID int64, name, apiUrl, apiKey, format string) error {
-	err := a.RouteService.AddFailoverEndpoint(groupID, name, apiUrl, apiKey, format)
+	return a.AddFailoverEndpointWithUpstream(groupID, name, "", apiUrl, apiKey, format)
+}
+
+// AddFailoverEndpointWithUpstream 向分组添加端点，并指定上游实际模型名
+func (a *AppService) AddFailoverEndpointWithUpstream(groupID int64, name, upstreamModel, apiUrl, apiKey, format string) error {
+	err := a.RouteService.AddFailoverEndpointWithUpstream(groupID, name, upstreamModel, apiUrl, apiKey, format)
 	if err == nil {
 		a.ProxyService.ResetFailoverState(groupID)
+	}
+	return err
+}
+
+// SetFailoverEndpointUpstreamModel 设置分组端点的上游模型名
+func (a *AppService) SetFailoverEndpointUpstreamModel(id int64, upstreamModel string) error {
+	err := a.RouteService.SetFailoverEndpointUpstreamModel(id, upstreamModel)
+	if err == nil {
+		a.ProxyService.ResetFailoverState(a.endpointGroupID(id))
 	}
 	return err
 }

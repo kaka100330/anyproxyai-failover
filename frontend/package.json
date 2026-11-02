@@ -1,10 +1,11 @@
 {
   "name": "openai-router-frontend",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:web": "vite build --mode web",
     "preview": "vite preview"
   },
   "dependencies": {

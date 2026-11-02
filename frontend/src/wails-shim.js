@@ -48,6 +48,10 @@ const createWailsShim = () => {
     DeleteFailoverGroup: (id) => callService('DeleteFailoverGroup', id),
     AddFailoverEndpoint: (groupID, name, apiUrl, apiKey, format) =>
       callService('AddFailoverEndpoint', groupID, name, apiUrl, apiKey, format),
+    AddFailoverEndpointWithUpstream: (groupID, name, upstreamModel, apiUrl, apiKey, format) =>
+      callService('AddFailoverEndpointWithUpstream', groupID, name, upstreamModel, apiUrl, apiKey, format),
+    SetFailoverEndpointUpstreamModel: (id, upstreamModel) =>
+      callService('SetFailoverEndpointUpstreamModel', id, upstreamModel),
     UpdateFailoverEndpoint: (id, name, apiUrl, apiKey, format, priority) =>
       callService('UpdateFailoverEndpoint', id, name, apiUrl, apiKey, format, priority),
     DeleteFailoverEndpoint: (id) => callService('DeleteFailoverEndpoint', id),

@@ -54,6 +54,9 @@
         <n-form-item :label="t('addRoute.apiFormat')" path="format">
           <n-select v-model:value="epForm.format" :options="formatOptions" />
         </n-form-item>
+        <n-form-item :label="t('failover.upstreamModel')">
+          <n-input v-model:value="epForm.upstreamModel" :placeholder="t('failover.upstreamModelPlaceholder')" />
+        </n-form-item>
       </n-form>
       <template #footer>
         <n-space justify="end">
@@ -88,7 +91,7 @@ const showEndpointForm = ref(false)
 const epFormRef = ref(null)
 const editingEndpoint = ref(null)
 const saving = ref(false)
-const epForm = ref({ name: '', apiUrl: '', apiKey: '', format: 'openai' })
+const epForm = ref({ name: '', apiUrl: '', apiKey: '', format: 'openai', upstreamModel: '' })
 
 const formatOptions = [
   { label: 'OpenAI', value: 'openai' },
@@ -142,6 +145,7 @@ const columns = computed(() => [
   { title: t('addRoute.apiUrl'), key: 'api_url', ellipsis: { tooltip: true } },
   { title: t('addRoute.apiKey'), key: 'api_key', width: 130, render: (row) => maskKey(row.api_key) },
   { title: t('addRoute.apiFormat'), key: 'format', width: 90 },
+  { title: t('failover.upstreamModel'), key: 'upstream_model', width: 150, render: (row) => row.upstream_model || '-' },
   {
     title: t('failover.status'),
     key: 'status',
@@ -177,8 +181,8 @@ watch(() => props.visible, (v) => {
 const openEndpointForm = (ep) => {
   editingEndpoint.value = ep
   epForm.value = ep
-    ? { name: ep.name, apiUrl: ep.api_url, apiKey: ep.api_key, format: ep.format || 'openai' }
-    : { name: '', apiUrl: '', apiKey: '', format: 'openai' }
+    ? { name: ep.name, apiUrl: ep.api_url, apiKey: ep.api_key, format: ep.format || 'openai', upstreamModel: ep.upstream_model || '' }
+    : { name: '', apiUrl: '', apiKey: '', format: 'openai', upstreamModel: '' }
   showEndpointForm.value = true
   setTimeout(() => epFormRef.value?.restoreValidation(), 0)
 }
@@ -196,9 +200,15 @@ const saveEndpoint = async () => {
         editingEndpoint.value.id, epForm.value.name, epForm.value.apiUrl, epForm.value.apiKey,
         epForm.value.format, editingEndpoint.value.priority ?? 0
       )
+      if ((epForm.value.upstreamModel || '') !== (editingEndpoint.value.upstream_model || '')) {
+        await window.go.main.App.SetFailoverEndpointUpstreamModel(
+          editingEndpoint.value.id, epForm.value.upstreamModel || ''
+        )
+      }
     } else {
-      await window.go.main.App.AddFailoverEndpoint(
-        props.group.id, epForm.value.name, epForm.value.apiUrl, epForm.value.apiKey, epForm.value.format
+      await window.go.main.App.AddFailoverEndpointWithUpstream(
+        props.group.id, epForm.value.name, epForm.value.upstreamModel || '',
+        epForm.value.apiUrl, epForm.value.apiKey, epForm.value.format
       )
     }
     showEndpointForm.value = false

@@ -223,7 +223,7 @@
                             <n-icon><CopyIcon /></n-icon>
                           </template>
                         </n-button>
-                        <n-button text size="small" @click="generateNewApiKey" style="margin-left: 8px;">
+                        <n-button v-if="!config.webMode" text size="small" @click="generateNewApiKey" style="margin-left: 8px;">
                           <template #icon>
                             <n-icon><RefreshIcon /></n-icon>
                           </template>
@@ -693,11 +693,11 @@
                     </n-text>
                   </div>
 
-                  <n-checkbox v-model:checked="settings.autoStart" @update:checked="toggleAutoStart">
+                  <n-checkbox v-if="!config.webMode" v-model:checked="settings.autoStart" @update:checked="toggleAutoStart">
                     {{ t('settings.autoStart') }}
                   </n-checkbox>
 
-                  <n-checkbox v-model:checked="settings.minimizeToTray" @update:checked="toggleMinimizeToTray">
+                  <n-checkbox v-if="!config.webMode" v-model:checked="settings.minimizeToTray" @update:checked="toggleMinimizeToTray">
                     {{ t('settings.minimizeToTray') }}
                   </n-checkbox>
 
@@ -715,8 +715,8 @@
                     {{ t('settings.sanitizeThinkingDesc') }}
                   </n-text>
 
-                  <!-- API 端口设置 -->
-                  <div style="margin-top: 16px;">
+                  <!-- API 端口设置（服务器模式由环境变量管理） -->
+                  <div v-if="!config.webMode" style="margin-top: 16px;">
                     <n-text depth="2" style="font-size: 14px; margin-bottom: 8px; display: block;">{{ t('settings.apiPort') }}</n-text>
                     <n-input-number
                       v-model:value="settings.port"
@@ -1608,6 +1608,7 @@ const yearlyColumns = computed(() => [
 const config = ref({
   localApiKey: '',
   localApiEndpoint: '',
+  webMode: false,
 })
 
 // Redirect Config
@@ -1687,6 +1688,14 @@ const groupEndpointColumns = computed(() => [
     title: t('models.apiUrl'),
     key: 'api_url',
     ellipsis: { tooltip: true },
+  },
+  {
+    title: t('failover.upstreamModel'),
+    key: 'upstream_model',
+    width: 150,
+    render(row) {
+      return row.upstream_model || row.model || '-'
+    },
   },
   {
     title: t('failover.status'),
@@ -2059,7 +2068,8 @@ const loadConfig = async () => {
     // 映射后端字段名到前端字段名
     config.value = {
       localApiKey: data.localApiKey || '',
-      localApiEndpoint: data.openaiEndpoint || ''
+      localApiEndpoint: data.openaiEndpoint || '',
+      webMode: data.webMode === true
     }
     redirectConfig.value.enabled = data.redirectEnabled || false
     redirectConfig.value.keyword = data.redirectKeyword || 'proxy_auto'

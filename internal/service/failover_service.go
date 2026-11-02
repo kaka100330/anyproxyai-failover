@@ -230,6 +230,11 @@ func (s *RouteService) GetFailoverEndpoints(groupID int64, onlyEnabled bool) ([]
 
 // AddFailoverEndpoint 向分组追加端点，优先级排在末尾
 func (s *RouteService) AddFailoverEndpoint(groupID int64, name, apiUrl, apiKey, format string) error {
+	return s.AddFailoverEndpointWithUpstream(groupID, name, "", apiUrl, apiKey, format)
+}
+
+// AddFailoverEndpointWithUpstream 向分组追加端点，并指定上游实际模型名（留空表示使用分组模型）
+func (s *RouteService) AddFailoverEndpointWithUpstream(groupID int64, name, upstreamModel, apiUrl, apiKey, format string) error {
 	if groupID <= 0 {
 		return fmt.Errorf("无效的分组ID")
 	}
@@ -246,15 +251,16 @@ func (s *RouteService) AddFailoverEndpoint(groupID int64, name, apiUrl, apiKey, 
 	if format == "" {
 		format = "openai"
 	}
-	now := time.Now()
-	_, err = s.db.Exec(`INSERT INTO model_routes (name, model, api_url, api_key, format, failover_group_id, priority, enabled, created_at, updated_at)
-	                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		name, group.Model, apiUrl, apiKey, format, groupID, nextPriority, now, now)
-	if err != nil {
+	if err := s.AddEndpointWithUpstream(groupID, name, group.Model, upstreamModel, apiUrl, apiKey, format, nextPriority); err != nil {
 		return err
 	}
-	log.Infof("Failover endpoint added: group=%d name=%s priority=%d", groupID, name, nextPriority)
+	log.Infof("Failover endpoint added: group=%d name=%s upstream=%s priority=%d", groupID, name, upstreamModel, nextPriority)
 	return nil
+}
+
+// SetFailoverEndpointUpstreamModel 更新分组端点的上游模型名
+func (s *RouteService) SetFailoverEndpointUpstreamModel(id int64, upstreamModel string) error {
+	return s.SetEndpointUpstreamModel(id, upstreamModel)
 }
 
 // UpdateFailoverEndpoint 更新端点；priority < 0 表示保持原优先级

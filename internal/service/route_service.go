@@ -21,7 +21,7 @@ func NewRouteService(db *sql.DB) *RouteService {
 
 // routeColumns 统一的查询列（顺序与 scanRoute 一致）
 const routeColumns = `id, name, model, api_url, api_key, COALESCE(format, 'openai'),
-	COALESCE(failover_group_id, 0), COALESCE(priority, 0), enabled, created_at, updated_at`
+	COALESCE(upstream_model, ''), COALESCE(failover_group_id, 0), COALESCE(priority, 0), enabled, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...interface{}) error
@@ -30,7 +30,7 @@ type rowScanner interface {
 func scanRoute(row rowScanner) (database.ModelRoute, error) {
 	var route database.ModelRoute
 	err := row.Scan(&route.ID, &route.Name, &route.Model, &route.APIUrl, &route.APIKey,
-		&route.Format, &route.FailoverGroupID, &route.Priority, &route.Enabled, &route.CreatedAt, &route.UpdatedAt)
+		&route.Format, &route.UpstreamModel, &route.FailoverGroupID, &route.Priority, &route.Enabled, &route.CreatedAt, &route.UpdatedAt)
 	return route, err
 }
 
@@ -99,23 +99,40 @@ func (s *RouteService) AddRoute(name, model, apiUrl, apiKey, format string) erro
 
 // AddEndpoint 添加端点：groupID = 0 表示未分组路由
 func (s *RouteService) AddEndpoint(groupID int64, name, model, apiUrl, apiKey, format string, priority int) error {
-	query := `INSERT INTO model_routes (name, model, api_url, api_key, format, failover_group_id, priority, enabled, created_at, updated_at)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+	return s.AddEndpointWithUpstream(groupID, name, model, "", apiUrl, apiKey, format, priority)
+}
+
+// AddEndpointWithUpstream 添加端点，并指定上游实际模型名（留空表示使用路由/分组模型）
+func (s *RouteService) AddEndpointWithUpstream(groupID int64, name, model, upstreamModel, apiUrl, apiKey, format string, priority int) error {
+	query := `INSERT INTO model_routes (name, model, upstream_model, api_url, api_key, format, failover_group_id, priority, enabled, created_at, updated_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
 
 	now := time.Now()
-	_, err := s.db.Exec(query, name, model, apiUrl, apiKey, format, groupID, priority, now, now)
+	_, err := s.db.Exec(query, name, model, upstreamModel, apiUrl, apiKey, format, groupID, priority, now, now)
 	if err != nil {
 		log.Errorf("Failed to add route: %v", err)
 		return err
 	}
 
-	log.Infof("Route added: %s -> %s (%s) [%s] group=%d priority=%d", model, apiUrl, name, format, groupID, priority)
+	log.Infof("Route added: %s (upstream=%s) -> %s (%s) [%s] group=%d priority=%d", model, upstreamModel, apiUrl, name, format, groupID, priority)
 	return nil
 }
 
 // UpdateRoute 更新未分组路由
 func (s *RouteService) UpdateRoute(id int64, name, model, apiUrl, apiKey, format string) error {
 	return s.UpdateEndpoint(id, name, model, apiUrl, apiKey, format, -1)
+}
+
+// SetEndpointUpstreamModel 设置端点的上游实际模型名（空字符串表示跟随分组模型）
+func (s *RouteService) SetEndpointUpstreamModel(id int64, upstreamModel string) error {
+	res, err := s.db.Exec(`UPDATE model_routes SET upstream_model = ?, updated_at = ? WHERE id = ?`, upstreamModel, time.Now(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("route not found: %d", id)
+	}
+	return nil
 }
 
 // UpdateEndpoint 更新端点；priority < 0 表示保持原优先级
