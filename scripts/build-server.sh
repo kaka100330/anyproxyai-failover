@@ -28,6 +28,37 @@ else
 fi
 
 echo "==> Packaging"
-tar -C "$OUT" -czf "$ROOT/build/anyproxyai-server-$VERSION-linux-amd64.tar.gz" .
+TARBALL="$ROOT/build/anyproxyai-server-$VERSION-linux-amd64.tar.gz"
+PYTHON_BIN="$(command -v python || command -v python3 || true)"
+if [ -n "$PYTHON_BIN" ]; then
+  # Windows 上 tar 会丢掉执行位；用 Python 重新打包并显式设置二进制权限。
+  "$PYTHON_BIN" - "$OUT" "$TARBALL" <<'PY'
+import os
+import sys
+import tarfile
 
-echo "Bundle: $ROOT/build/anyproxyai-server-$VERSION-linux-amd64.tar.gz"
+
+def normalize(member):
+    member.uid = 0
+    member.gid = 0
+    member.uname = "root"
+    member.gname = "root"
+    if member.isdir():
+        member.mode = 0o755
+    elif member.name == "anyproxyai-server":
+        member.mode = 0o755
+    else:
+        member.mode = 0o644
+    return member
+
+
+root, dest = sys.argv[1], sys.argv[2]
+with tarfile.open(dest, "w:gz") as tar:
+    for name in sorted(os.listdir(root)):
+        tar.add(os.path.join(root, name), arcname=name, filter=normalize)
+PY
+else
+  tar -C "$OUT" -czf "$TARBALL" .
+fi
+
+echo "Bundle: $TARBALL"
