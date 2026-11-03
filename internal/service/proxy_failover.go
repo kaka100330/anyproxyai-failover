@@ -116,9 +116,19 @@ func isFailoverStatus(code int) bool {
 // doWithFailover 依次尝试候选端点，返回第一个可用的响应
 // attempt 负责按目标端点构造并发送请求
 func (s *ProxyService) doWithFailover(res *routeResolution, attempt func(target *database.ModelRoute) (*http.Response, error)) (*http.Response, *database.ModelRoute, error) {
+	return s.doWithFailoverExcept(res, nil, attempt)
+}
+
+// doWithFailoverExcept is doWithFailover with a skip set.  It lets the
+// sanitizer mark an endpoint as failed and continue with the next candidate
+// instead of retrying the same corrupted endpoint forever.
+func (s *ProxyService) doWithFailoverExcept(res *routeResolution, skip map[int64]bool, attempt func(target *database.ModelRoute) (*http.Response, error)) (*http.Response, *database.ModelRoute, error) {
 	var lastErr error
 
 	for i, target := range res.Targets {
+		if skip != nil && skip[target.ID] {
+			continue
+		}
 		resp, err := attempt(target)
 		if err != nil {
 			lastErr = err

@@ -70,6 +70,25 @@ func collectContent(t *testing.T, stream string) (content, reasoning string, err
 	return cb.String(), rb.String(), errCode
 }
 
+func TestSSERewriterPoisonAfterPartialContent(t *testing.T) {
+	deltas := []map[string]any{
+		{"content": "部分答案。"},
+		{"content": "<｜｜DSML｜｜ invoke>"},
+	}
+	r := NewSSERewriter(strings.NewReader(buildSSE(t, deltas)))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !r.Poisoned() {
+		t.Fatalf("a malformed DSML call after content must poison the stream: %s", string(out))
+	}
+	content, _, _ := collectContent(t, string(out))
+	if content != "部分答案。" {
+		t.Fatalf("content = %q", content)
+	}
+}
+
 func TestSSERewriterPassesCleanAnswer(t *testing.T) {
 	deltas := []map[string]any{
 		{"role": "assistant"},

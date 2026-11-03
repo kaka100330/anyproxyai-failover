@@ -5,13 +5,8 @@ import (
 	"sync/atomic"
 )
 
-// Regular expressions used by the guard. Kept in one place so the streaming and
-// non-streaming paths cannot diverge.
-var (
-	openThinkAtStartRe = mustRe(`(?i)^<thinking\s*>?`)
-	closeThinkRe       = mustRe(`(?i)</thinking\s*>`)
-)
-
+// Regular expressions used by the guard. The tag patterns themselves live in
+// normalize.go because the request-history cleaner needs the same rules.
 func mustRe(expr string) *regexp.Regexp {
 	return regexp.MustCompile(expr)
 }

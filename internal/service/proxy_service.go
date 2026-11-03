@@ -164,6 +164,7 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	requestFormat := detectRequestFormat(reqData)
@@ -180,18 +181,22 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 	var adapterName string
 	startTime := time.Now()
 
-	attempts := 1
-	if s.sanitizeThinkingEnabled() {
-		attempts = 2
+	maxRounds := len(res.Targets) + 2
+	if maxRounds < 2 {
+		maxRounds = 2
 	}
 
 	var resp *http.Response
 	var responseBody []byte
 	var ferr error
+	var lastSanitizeErr error
+	retriedSameRoute := false
+	sanitizedOK := false
+	skip := map[int64]bool{}
 
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for round := 1; round <= maxRounds; round++ {
 		adapterName = ""
-		resp, route, ferr = s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
+		resp, route, ferr = s.doWithFailoverExcept(res, skip, func(target *database.ModelRoute) (*http.Response, error) {
 			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
 			adapterName = s.detectAdapterForRoute(target, requestFormat)
 			attemptModel := targetModelFor(model, target)
@@ -241,6 +246,9 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 			return s.httpClient.Do(proxyReq)
 		})
 		if ferr != nil {
+			if lastSanitizeErr != nil {
+				return nil, http.StatusBadGateway, lastSanitizeErr
+			}
 			s.routeService.LogRequest(model, 0, 0, 0, 0, false, ferr.Error())
 			return nil, http.StatusServiceUnavailable, ferr
 		}
@@ -254,19 +262,34 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 		responseBody = body
 
 		// A response that carries its own reasoning as the assistant answer
-		// must not reach the client: repair it, and retry once.
+		// must not reach the client: repair it, and fail over if needed.
 		if adapterName == "" && s.sanitizeThinkingEnabled() && resp.StatusCode == http.StatusOK {
 			out, serr := s.sanitizeNonStreamBody(body)
 			if serr != nil {
-				if attempt < attempts {
-					log.Warnf("[Sanitize] attempt %d was poisoned, retrying", attempt)
+				lastSanitizeErr = serr
+				if route != nil && res.Group != nil {
+					s.failover.MarkFailed(res.Group.ID, route.ID)
+				}
+				if len(res.Targets) > 1 && route != nil {
+					skip[route.ID] = true
+					log.Warnf("[Sanitize] endpoint=%s rejected the response (%v), failing over", route.Name, serr)
 					continue
 				}
+				if !retriedSameRoute {
+					retriedSameRoute = true
+					log.Warnf("[Sanitize] retrying endpoint=%s once after sanitizer rejection: %v", route.Name, serr)
+					continue
+				}
+				s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, serr.Error())
 				return nil, http.StatusBadGateway, serr
 			}
 			responseBody = out
 		}
+		sanitizedOK = true
 		break
+	}
+	if !sanitizedOK && lastSanitizeErr != nil {
+		return nil, http.StatusBadGateway, lastSanitizeErr
 	}
 
 	// 详细日志：记录返回结�?
@@ -384,6 +407,7 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	requestFormat := detectRequestFormat(reqData)
@@ -399,17 +423,20 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 
 	var adapterName string
 
-	attempts := 1
-	if s.sanitizeThinkingEnabled() {
-		attempts = 2
+	maxRounds := len(res.Targets) + 2
+	if maxRounds < 2 {
+		maxRounds = 2
 	}
 
 	var resp *http.Response
 	var ferr error
+	var lastSanitizeErr error
+	retriedSameRoute := false
+	skip := map[int64]bool{}
 
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for round := 1; round <= maxRounds; round++ {
 		adapterName = ""
-		resp, route, ferr = s.doWithFailover(res, func(target *database.ModelRoute) (*http.Response, error) {
+		resp, route, ferr = s.doWithFailoverExcept(res, skip, func(target *database.ModelRoute) (*http.Response, error) {
 			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
 			adapterName = s.detectAdapterForRoute(target, requestFormat)
 			attemptModel := targetModelFor(model, target)
@@ -464,6 +491,10 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 			return s.httpClient.Do(proxyReq)
 		})
 		if ferr != nil {
+			if lastSanitizeErr != nil {
+				writeSanitizeError(writer, flusher, lastSanitizeErr)
+				return lastSanitizeErr
+			}
 			return ferr
 		}
 
@@ -486,20 +517,38 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 			return streamErr
 		}
 
-		streamErr := s.streamDirectSanitized(resp.Body, writer, flusher, model, route.ID, attempt > 1)
+		streamErr := s.streamDirectSanitized(resp.Body, writer, flusher, model, route.ID, round > 1)
 		resp.Body.Close()
 		if streamErr == nil {
 			return nil
 		}
-		if errors.Is(streamErr, errThinkAsContent) {
-			if attempt < attempts {
-				log.Warnf("[Sanitize] stream attempt %d was poisoned, retrying", attempt)
-				continue
-			}
-			writeThinkAsContentError(writer, flusher)
+		if errors.Is(streamErr, errSanitizePartial) {
+			// Bytes already reached the client: a retry would duplicate them.
+			writeSanitizeError(writer, flusher, streamErr)
 			return streamErr
 		}
+		if errors.Is(streamErr, errThinkAsContent) || errors.Is(streamErr, errEmptyUpstream) {
+			lastSanitizeErr = streamErr
+			if route != nil && res.Group != nil {
+				s.failover.MarkFailed(res.Group.ID, route.ID)
+			}
+			if len(res.Targets) > 1 && route != nil {
+				skip[route.ID] = true
+				log.Warnf("[Sanitize] endpoint=%s rejected the response (%v), failing over", route.Name, streamErr)
+				continue
+			}
+			if !retriedSameRoute {
+				retriedSameRoute = true
+				log.Warnf("[Sanitize] retrying endpoint=%s once after sanitizer rejection: %v", route.Name, streamErr)
+				continue
+			}
+			break
+		}
 		return streamErr
+	}
+	if lastSanitizeErr != nil {
+		writeSanitizeError(writer, flusher, lastSanitizeErr)
+		return lastSanitizeErr
 	}
 	return nil
 }
@@ -549,6 +598,7 @@ func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 	reqData["stream"] = true
 
@@ -713,6 +763,7 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	var adapterName string
@@ -853,6 +904,7 @@ func (s *ProxyService) ProxyAnthropicStreamRequest(requestBody []byte, headers m
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	var adapterName string
@@ -2183,6 +2235,7 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	var needConvertResponse string
@@ -2331,6 +2384,7 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	var responseConversionType string
@@ -2832,6 +2886,7 @@ func (s *ProxyService) ProxyClaudeCodeRequest(requestBody []byte, headers map[st
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	var needConvertResponse bool
@@ -3449,6 +3504,7 @@ func (s *ProxyService) ProxyCursorRequest(requestBody []byte, headers map[string
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	requestFormat := detectRequestFormat(reqData)
@@ -3606,6 +3662,7 @@ func (s *ProxyService) ProxyCursorStreamRequest(requestBody []byte, headers map[
 	}
 	model = res.Model
 	reqData["model"] = model
+	s.sanitizeRequestHistory(reqData)
 	requestBody, _ = json.Marshal(reqData)
 
 	requestFormat := detectRequestFormat(reqData)

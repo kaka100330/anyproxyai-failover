@@ -89,26 +89,44 @@ client ── model: deepseek-v4.1-flash ──▶ ┌ 优先级 0  官方直连
 
 ## 3. 响应净化（修复 Think 被当作正文）
 
-一些 OpenAI 兼容上游（典型是"国模自动路由"这类聚合服务）在把原生 DeepSeek / Claude 输出转成 OpenAI 格式时会出错，产生三种畸形响应：
+一些 OpenAI 兼容上游（典型是"国模自动路由"这类聚合服务）在把原生 DeepSeek / Claude 输出转成 OpenAI 格式时会出错，产生这些畸形响应：
 
 | 形态 | 表现 | 对客户端的后果 |
 | --- | --- | --- |
 | 思维链进正文 | `content` 与 `reasoning_content` 逐字相同 | 正文是一大段推理，`tool_calls` 为空，`finish_reason=stop`，Agent 会把半截推理当成最终回答，本轮任务直接结束 |
-| `<thinking>` 标签未剥离 | `content` 以 `<thinking>…` 开头 | 推理内容显示在聊天正文里 |
-| DSML 工具调用泄漏 | `content` 里出现 `<｜｜DSML｜｜ invoke name="…">` | 工具调用失效，模型"说要调用"却什么都没发生 |
+| 思维标签未剥离 | `content` 以 `<thinking>` / `<think>` / `<analysis>` 开头，或二者未闭合 | 推理内容显示在聊天正文里，甚至整段思维链被当成最终答复 |
+| 孤立闭合标签 | `content` / `reasoning_content` 里残留 `</thinking>`、`</think>`、`</analysis>` | 正文只剩一个闭合标签；下一轮模型照抄，标签越积越多 |
+| DSML 工具调用泄漏 | 正文或 reasoning 里出现 `<｜｜DSML｜｜ invoke name="…">` | 工具调用失效，模型"说要调用"却什么都没发生 |
+| DSML 闭合残片 | 只有 `</parameter></invoke></calls>`，没有 `invoke` 起始 | 旧版误判为 `THINK_AS_CONTENT` 直接中断会话 |
 
-本版内置净化层（`internal/sanitize`），在转发前识别并修复：
+净化层（`internal/sanitize`）在**请求侧和响应侧**同时工作，因为这类故障是自激的：畸形输出进入历史 → 模型模仿自己的标签 → 下一轮更畸形。
+
+**响应侧**（转发前修复，两个通道都清洗）：
 
 - `content` 与 `reasoning_content` 完全相同 → 丢弃重复正文，只保留 reasoning；
-- 正文被 `<thinking>` 包裹 → 搬回 `reasoning_content`；
-- 正文中残留 DSML 调用 → 解析回真实 `tool_calls`，`finish_reason` 置为 `tool_calls`；
-- 流式与非流式都支持，修复后的思考内容不会重复下发；
-- **正常响应逐字节透传**，不改写、不重试、不增加延迟；
-- 只有确认异常才重试一次；两次都异常时返回 `THINK_AS_CONTENT` 错误，而不是伪造一个"最终回答"。
+- 正文被 `<thinking>` / `<think>` / `<analysis>` 包裹或截断 → 搬回 `reasoning_content`，正文只留真正的答复；
+- 两个通道中的孤立闭合标签、DSML 闭合残片、`<acp>` / `<control>` 传输标记全部剥除；
+- reasoning 行首被逐轮复制的 Markdown 引用前缀 `>` 一并去掉（否则客户端会渲染成越来越深的嵌套引用）；
+- 正文中残留的完整 DSML 调用 → 解析回真实 `tool_calls`，`finish_reason` 置为 `tool_calls`；
+- 流式与非流式都支持；标签被 SSE 分片从中间切开时也不会漏出；
+- **正常响应逐字节透传**，不改写、不重试、不增加延迟。
+
+**请求侧**（转发前清理历史）：
+
+- 删除 assistant 消息里的 `reasoning_content` / `reasoning` / `reasoning_text`（OpenAI 协议本就没有回放思维链的位置，DeepSeek 也明确不建议回传）；
+- 清除历史正文里残留的 `<thinking>` / `<think>` / `<analysis>` 片段；
+- 丢弃只剩标签残片、且没有 `tool_calls` 的空 assistant 轮次。
+
+**失败与故障转移**：
+
+- 只有包含真实 `invoke` 但无法解析的 DSML 才判为失败；纯闭合残片记为 `dsml_orphan_tail_dropped`，按空响应处理；
+- sanitizer 判定失败时，标记该端点失败并**切换到分组内的下一个端点**，而不是在同一端点反复重试；
+- 已经向客户端下发过正文后才失败，返回 `SANITIZE_PARTIAL` 且不重试（重试会重复正文）；
+- 错误码区分 `THINK_AS_CONTENT`（思维链当正文）、`EMPTY_UPSTREAM`（空响应 / 只有残片）、`SANITIZE_PARTIAL`（部分输出后失败），客户端可据此判断是模型问题还是端点健康问题。
 
 开关在 **设置 → 修复思维链泄漏（Think as content）**，对应配置文件字段 `sanitize_thinking`，默认开启。旧配置缺该键时也按开启处理。
 
-> 只作用于 OpenAI 格式直连路径（无格式转换）。Claude / Gemini 适配器路径保持原行为。
+> 响应净化只作用于 OpenAI 格式直连路径（无格式转换）。Claude / Gemini 适配器路径保持原行为；请求侧历史清理覆盖所有路径。
 
 ---
 

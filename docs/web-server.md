@@ -21,7 +21,7 @@ Web 版把原来的 Wails 桌面外壳拆掉，变成：
 在开发机（Windows / macOS / Linux 均可）执行：
 
 ```bash
-VERSION=2.4.0 bash scripts/build-server.sh
+VERSION=2.5.0 bash scripts/build-server.sh
 ```
 
 产物：
@@ -45,12 +45,12 @@ build/server/
 ```bash
 # 1) 上传并解压构建产物
 mkdir -p /opt/anyproxyai-build
-tar -xzf anyproxyai-server-2.4.0-linux-amd64.tar.gz -C /opt/anyproxyai-build
+tar -xzf anyproxyai-server-2.5.0-linux-amd64.tar.gz -C /opt/anyproxyai-build
 
 # 2) 确保二进制有执行权限后构建镜像
 chmod 755 /opt/anyproxyai-build/anyproxyai-server
 cd /opt/anyproxyai-build
-docker build -t anyproxyai:2.4.0 .
+docker build -t anyproxyai:2.5.0 .
 
 # 3) 准备数据目录和 compose 文件
 mkdir -p /opt/anyproxyai/data
@@ -87,7 +87,7 @@ docker logs -f anyproxyai
 
 ```bash
 sudo mkdir -p /opt/anyproxyai
-sudo tar -xzf anyproxyai-server-2.4.0-linux-amd64.tar.gz -C /opt/anyproxyai
+sudo tar -xzf anyproxyai-server-2.5.0-linux-amd64.tar.gz -C /opt/anyproxyai
 sudo chmod 755 /opt/anyproxyai/anyproxyai-server
 
 sudo cp /opt/anyproxyai/anyproxyai.service /etc/systemd/system/

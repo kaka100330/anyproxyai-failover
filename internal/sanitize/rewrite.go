@@ -79,13 +79,17 @@ func ApplyToBody(body []byte) (out []byte, notes []string, poison bool) {
 		msg["content"] = g.EmittedContent()
 		if r := g.EmittedReasoning(); r != "" {
 			msg[field] = r
+		} else if reasoning != "" {
+			// The whole reasoning field was delimiter residue. Clear it
+			// instead of leaving the original dirty text in the body.
+			msg[field] = ""
 		}
 		toolCalls := g.ToolCalls()
 		if len(toolCalls) > 0 {
 			msg["tool_calls"] = toolCallsJSON(toolCalls)
 			choice["finish_reason"] = "tool_calls"
 		}
-		if g.Retryable() && len(toolCalls) == 0 && g.EmittedContent() == "" {
+		if g.Retryable() && len(toolCalls) == 0 {
 			poison = true
 		}
 	}
@@ -166,6 +170,11 @@ func (s *SSERewriter) Poisoned() bool { return s.poison }
 // Notes returns the repair notes collected for this stream.
 func (s *SSERewriter) Notes() []string { return s.guard.Notes() }
 
+// EmittedContent reports the answer text already written to the client.  The
+// caller uses it to decide whether a rejected stream may be retried: once
+// content has been forwarded, a retry would duplicate the partial answer.
+func (s *SSERewriter) EmittedContent() string { return s.guard.EmittedContent() }
+
 // Read implements io.Reader.
 func (s *SSERewriter) Read(p []byte) (int, error) {
 	for s.out.Len() == 0 && !s.done {
@@ -190,6 +199,14 @@ func (s *SSERewriter) step() error {
 		if err == io.EOF && !s.finishSent {
 			s.finishSent = true
 			s.emitEvents(s.guard.Finish())
+			if s.guard.Retryable() {
+				s.poison = true
+				if !s.silent && s.guard.EmittedContent() == "" {
+					s.writeError()
+				}
+				s.done = true
+				return nil
+			}
 			s.writeFinish("stop", nil)
 		}
 		return err
@@ -212,9 +229,9 @@ func (s *SSERewriter) step() error {
 		if !s.finishSent {
 			s.finishSent = true
 			s.emitEvents(s.guard.Finish())
-			if s.guard.Retryable() && !s.guard.HasOutput() {
+			if s.guard.Retryable() {
 				s.poison = true
-				if !s.silent {
+				if !s.silent && s.guard.EmittedContent() == "" {
 					s.writeError()
 				}
 				s.done = true
@@ -285,10 +302,10 @@ func (s *SSERewriter) step() error {
 		fr := finish
 		s.finishSent = true
 		s.emitEvents(s.guard.Finish())
-		if s.guard.Retryable() && !s.guard.HasOutput() {
+		if s.guard.Retryable() {
 			s.poison = true
 			rejectedCount.Add(1)
-			if !s.silent {
+			if !s.silent && s.guard.EmittedContent() == "" {
 				s.writeError()
 			}
 			s.done = true

@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -18,11 +19,38 @@ import (
 // as the model's final message and silently end the turn.
 var errThinkAsContent = errors.New("upstream returned its reasoning as assistant content (think-as-content)")
 
+// errEmptyUpstream reports that the response contained no usable assistant
+// output after sanitizing.  In the original incident the upstream emitted only
+// residual DSML closing tags; calling that "think-as-content" was misleading
+// and also hid the fact that the endpoint was unhealthy.
+var errEmptyUpstream = errors.New("upstream returned no usable content after sanitizing")
+
+// errSanitizePartial reports that the response was rejected after some content
+// had already been forwarded.  Retrying another endpoint would duplicate the
+// partial answer, so the caller must fail the request instead.
+var errSanitizePartial = errors.New("upstream response was rejected after partial content was sent")
+
 // sanitizeThinkingEnabled reports whether the response sanitizer is switched on.
 // Missing config values default to false so tests and library users see the
 // historical behaviour unless they opt in; LoadConfig sets it to true.
 func (s *ProxyService) sanitizeThinkingEnabled() bool {
 	return s != nil && s.config != nil && s.config.SanitizeThinking
+}
+
+// sanitizeRequestHistory removes reasoning replay and leaked chain-of-thought
+// from the assistant messages before the request is sent upstream. This is the
+// other half of the fix: sanitizing only the response leaves the model staring
+// at its own malformed output on every turn, so it keeps copying the tags.
+func (s *ProxyService) sanitizeRequestHistory(reqData map[string]interface{}) {
+	if !s.sanitizeThinkingEnabled() || reqData == nil {
+		return
+	}
+	changed, notes := sanitize.CleanAssistantHistory(reqData)
+	if changed == 0 {
+		return
+	}
+	log.Warnf("[Sanitize] cleaned request history: %d assistant message(s), notes=%s",
+		changed, strings.Join(notes, ","))
 }
 
 // sanitizeNonStreamBody repairs a completed (non-streaming) OpenAI response.
@@ -75,9 +103,18 @@ func (s *ProxyService) streamDirectSanitized(reader io.Reader, writer io.Writer,
 				promptTokens, completionTokens := s.extractTokensFromStreamResponse(raw.String())
 				totalTokens := promptTokens + completionTokens
 				if rewriter.Poisoned() {
-					s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, false, errThinkAsContent.Error())
+					failure := errThinkAsContent
+					switch {
+					case rewriter.EmittedContent() != "":
+						failure = errSanitizePartial
+					case hasNote(rewriter.Notes(), sanitize.NoteEmptyAfter) &&
+						!hasNote(rewriter.Notes(), sanitize.NoteDuplicate) &&
+						!hasNote(rewriter.Notes(), sanitize.NoteDsmlUnparsed):
+						failure = errEmptyUpstream
+					}
+					s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, false, failure.Error())
 					log.Warnf("[Sanitize] rejected stream (%d bytes forwarded): %s", bytesWritten, strings.Join(rewriter.Notes(), ","))
-					return errThinkAsContent
+					return failure
 				}
 				log.Debugf("[Sanitize] stream completed, %d bytes forwarded", bytesWritten)
 				s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, true, "")
@@ -92,7 +129,39 @@ func (s *ProxyService) streamDirectSanitized(reader io.Reader, writer io.Writer,
 
 // writeThinkAsContentError tells an SSE client that the answer is unusable.
 func writeThinkAsContentError(writer io.Writer, flusher http.Flusher) {
-	payload := `{"error":{"message":"upstream returned its reasoning as assistant content (think-as-content); response rejected by anyproxyai sanitizer","type":"upstream_error","code":"THINK_AS_CONTENT"}}`
-	io.WriteString(writer, "data: "+payload+"\n\ndata: [DONE]\n\n")
+	writeSanitizeError(writer, flusher, errThinkAsContent)
+}
+
+// writeSanitizeError reports the concrete sanitizer verdict instead of always
+// claiming "think-as-content". EMPTY_UPSTREAM in particular tells the client
+// that the endpoint returned only delimiter residue, which is a health signal.
+func writeSanitizeError(writer io.Writer, flusher http.Flusher, err error) {
+	code := "THINK_AS_CONTENT"
+	message := errThinkAsContent.Error()
+	switch {
+	case errors.Is(err, errEmptyUpstream):
+		code = "EMPTY_UPSTREAM"
+		message = errEmptyUpstream.Error()
+	case errors.Is(err, errSanitizePartial):
+		code = "SANITIZE_PARTIAL"
+		message = errSanitizePartial.Error()
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": message + "; response rejected by anyproxyai sanitizer",
+			"type":    "upstream_error",
+			"code":    code,
+		},
+	})
+	io.WriteString(writer, "data: "+string(payload)+"\n\ndata: [DONE]\n\n")
 	flusher.Flush()
+}
+
+func hasNote(notes []string, want string) bool {
+	for _, note := range notes {
+		if note == want {
+			return true
+		}
+	}
+	return false
 }

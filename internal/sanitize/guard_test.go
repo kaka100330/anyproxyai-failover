@@ -243,3 +243,18 @@ func TestParseDsmlMultipleInvokes(t *testing.T) {
 		t.Fatalf("b = %v", b)
 	}
 }
+
+func TestDsmlTailWithProseKeepsProse(t *testing.T) {
+	g := NewGuard()
+	g.Push("</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ calls>\n端口 5642 正常。", "", nil)
+	g.Finish()
+	if got := g.EmittedContent(); got != "端口 5642 正常。" {
+		t.Fatalf("content = %q", got)
+	}
+	if g.Retryable() {
+		t.Fatalf("residue must not poison the stream: %v", g.Notes())
+	}
+	if !strings.Contains(strings.Join(g.Notes(), ","), NoteOrphanDsml) {
+		t.Fatalf("notes = %v", g.Notes())
+	}
+}

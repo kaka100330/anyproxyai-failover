@@ -1,5 +1,17 @@
 # 更新日志 / Changelog
 
+## v2.5.0
+
+### 修复
+
+- **思维链泄漏（think-as-content）的完整修复**：v2.3.0 只识别正文开头的 `<thinking>`，真实会话里还会出现 `<think>`、`<analysis>`、未闭合标签、正文中的孤立 `</thinking>`，以及 reasoning 通道里的 DSML 闭合残片。这些内容会被客户端当成正文或下一轮上下文，模型随后不断复制自己的标签，出现「思考嵌套」和「思考当正文」并最终中断。
+  - 响应侧同时清理 `content` 与 `reasoning_content`：识别 `<thinking>` / `<think>` / `<analysis>`（含未闭合），把正文中的思维链搬回 reasoning；清除两个通道里残留的闭合标签、DSML 闭合残片、`<acp>` / `<control>` 传输标记，以及 reasoning 行首不断增长的 Markdown 引用前缀 `>`。
+  - 请求侧在转发前清理 assistant 历史中的 `reasoning_content` / `reasoning` / `reasoning_text`，并移除只含标签残片的空 assistant 消息，避免模型反复模仿上一轮的畸形输出。
+  - 流式路径增加分块边界保护，标签被 SSE 分片切成两半时不会被漏出。
+- **孤立 DSML 闭合残片不再误判为 `THINK_AS_CONTENT`**：只有包含真实 `invoke` 但无法解析的 DSML 才判为失败；只有 `</parameter></invoke></calls>` 这类闭合残片时记为 `dsml_orphan_tail_dropped`，按空响应处理并允许换端点，而不是直接中断会话。
+- **sanitizer 判定失败时按端点故障转移**：此前只在同一端点重试；现在会标记该端点失败并切换到分组内的下一个端点。错误码区分 `THINK_AS_CONTENT`、`EMPTY_UPSTREAM`、`SANITIZE_PARTIAL`，客户端能区分「思维链当正文」「空响应」「已输出部分内容后失败」。
+- 新增 `internal/sanitize/normalize.go` 与对应单元测试，覆盖 `<think>` / `<analysis>`、孤立闭合标签、DSML 闭合残片、历史清理和 sanitizer 故障转移。
+
 ## v2.3.0
 
 ### 新增

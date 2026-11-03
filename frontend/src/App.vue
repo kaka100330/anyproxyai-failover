@@ -658,7 +658,7 @@
 
                   <n-space align="center">
                     <n-icon size="20"><InformationCircleIcon /></n-icon>
-                    <n-text>{{ t('settings.version') }}: v2.2.0</n-text>
+                    <n-text>{{ t('settings.version') }}: v2.5.0</n-text>
                   </n-space>
 
                   <n-space align="center">

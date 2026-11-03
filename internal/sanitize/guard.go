@@ -43,10 +43,12 @@ const (
 	NoteEmptyAfter       = "empty_after_sanitize"
 	NoteDsmlRecovered    = "dsml_recovered"
 	NoteDsmlUnparsed     = "dsml_unparsed"
+	NoteOrphanDsml       = "dsml_orphan_tail_dropped"
 	NoteThinkingTagTaken = "thinking_tag_extracted"
+	NoteChannelCleaned   = "channel_delimiters_cleaned"
 )
 
-var markers = []string{"<｜｜DSML｜｜", "<|DSML|", "<｜DSML｜>"}
+var markers = []string{"<｜｜DSML｜｜", "<|DSML|", "<｜DSML｜>", "</｜｜DSML｜｜", "</|DSML|", "</｜DSML｜>"}
 
 // ToolCall is a reconstructed OpenAI tool call.
 type ToolCall struct {
@@ -208,7 +210,7 @@ func NewGuard() *Guard {
 // Notes returns the notes collected so far.
 func (g *Guard) Notes() []string {
 	out := make([]string, 0, len(g.notes))
-	for _, k := range []string{NoteThinkingTagTaken, NoteDuplicate, NoteDsmlRecovered, NoteDsmlUnparsed, NoteEmptyAfter} {
+	for _, k := range []string{NoteThinkingTagTaken, NoteChannelCleaned, NoteDuplicate, NoteDsmlRecovered, NoteDsmlUnparsed, NoteOrphanDsml, NoteEmptyAfter} {
 		if g.notes[k] {
 			out = append(out, k)
 		}
@@ -256,12 +258,24 @@ func (g *Guard) emitReasoning(end int, out *[]Event) {
 	if end <= g.reasonEmit {
 		return
 	}
+	end = safeCut(g.reasoning, end)
 	end = runeBoundary(g.reasoning, end)
 	if end <= g.reasonEmit {
 		return
 	}
-	text := g.reasoning[g.reasonEmit:end]
+	raw := g.reasoning[g.reasonEmit:end]
 	g.reasonEmit = end
+	cleaned := cleanReasoningChunk(raw)
+	text := cleaned
+	if end == len(g.reasoning) {
+		text = strings.TrimSpace(text)
+	}
+	if cleaned != raw {
+		g.notes[NoteChannelCleaned] = true
+	}
+	if text == "" {
+		return
+	}
 	g.emittedReasoning += text
 	*out = append(*out, Event{Kind: EventReasoning, Text: text})
 }
@@ -302,8 +316,16 @@ func (g *Guard) pushContent(text string, out *[]Event) {
 		g.pending += text
 		t := strings.TrimLeft(g.pending, " \t\r\n")
 		lower := strings.ToLower(t)
-		if len(t) < len("<thinking") && strings.HasPrefix("<thinking", lower) {
-			return
+		// Hold a prefix that may still become <thinking>, <think> or
+		// <analysis>.  The old code only knew <thinking>, so a stream that
+		// started with "<think>" was emitted as body text before the tag could
+		// be recognised.
+		if len(t) < len("<analysis") {
+			for _, tag := range []string{"<thinking", "<think", "<analysis"} {
+				if strings.HasPrefix(tag, lower) {
+					return
+				}
+			}
 		}
 		if loc := openThinkAtStartRe.FindStringIndex(t); loc != nil {
 			rest := t[loc[1]:]
@@ -358,6 +380,9 @@ func (g *Guard) flushContent(out *[]Event, all bool) {
 	if limit <= g.contentEmit {
 		return
 	}
+	if !all {
+		limit = safeCut(g.content, limit)
+	}
 	mk := findMarker(g.content, g.contentEmit, limit)
 	end := limit
 	if mk >= 0 {
@@ -367,10 +392,20 @@ func (g *Guard) flushContent(out *[]Event, all bool) {
 		end = runeBoundary(g.content, end)
 	}
 	if end > g.contentEmit {
-		text := g.content[g.contentEmit:end]
+		raw := g.content[g.contentEmit:end]
+		cleaned := cleanContentChunk(raw)
+		text := cleaned
 		g.contentEmit = end
-		g.emittedContent += text
-		*out = append(*out, Event{Kind: EventContent, Text: text})
+		if all {
+			text = strings.TrimSpace(text)
+		}
+		if cleaned != raw {
+			g.notes[NoteChannelCleaned] = true
+		}
+		if text != "" {
+			g.emittedContent += text
+			*out = append(*out, Event{Kind: EventContent, Text: text})
+		}
 	}
 	if mk >= 0 {
 		g.dsmlSource = "content"
@@ -388,39 +423,92 @@ func (g *Guard) Finish() []Event {
 	g.finished = true
 
 	if g.mode == "unknown" && g.pending != "" {
-		g.mode = "text"
-		g.appendContent(g.pending, &out)
+		// Feed the held prefix through the normal content path so a
+		// single-chunk "<think>...</think>answer" is split correctly at EOF.
+		pending := g.pending
 		g.pending = ""
+		g.pushContent(pending, &out)
+		if g.pending != "" {
+			// The stream ended in the middle of a possible opening tag; it
+			// cannot become a wrapper any more, so treat it as text.
+			g.mode = "text"
+			rest := g.pending
+			g.pending = ""
+			g.appendContent(rest, &out)
+		}
 	}
 	if g.dsmlSource != "reasoning" {
 		g.emitReasoning(len(g.reasoning), &out)
 	}
 
-	switch {
-	case g.dsmlSource != "":
-		calls, ok := parseDsml(g.dsmlBuf)
-		if ok {
-			for i := range calls {
-				calls[i].ID = newCallID()
+	for {
+		switch {
+		case g.dsmlSource != "":
+			g.finishDsml(&out)
+		case g.dup && strings.HasPrefix(g.reasoning, g.content):
+			// The whole content was a copy of the reasoning: nothing was emitted.
+			g.notes[NoteDuplicate] = true
+			g.dup = false
+		default:
+			g.flushContent(&out, true)
+			// flushContent may discover a DSML marker that was held back in
+			// the tail.  It has to be parsed here as well, otherwise a marker
+			// arriving in the last 32 bytes would silently become content.
+			if g.dsmlSource == "" {
+				goto finished
 			}
-			g.toolCalls = calls
-			out = append(out, Event{Kind: EventTools, Calls: calls})
-			g.notes[NoteDsmlRecovered] = true
-		} else {
-			g.notes[NoteDsmlUnparsed] = true
+			continue
 		}
-	case g.dup && strings.HasPrefix(g.reasoning, g.content):
-		// The whole content was a copy of the reasoning: nothing was emitted.
-		g.notes[NoteDuplicate] = true
-		g.dup = false
-	default:
-		g.flushContent(&out, true)
+		break
 	}
+finished:
 
 	if g.emittedContent == "" && len(g.toolCalls) == 0 && !g.upstreamTools {
 		g.notes[NoteEmptyAfter] = true
 	}
 	return out
+}
+
+// finishDsml resolves the DSML buffer collected from either channel.  Closing
+// residue is stripped (and any prose around it kept); only a real but
+// malformed invoke remains a hard failure.
+func (g *Guard) finishDsml(out *[]Event) {
+	calls, ok := parseDsml(g.dsmlBuf)
+	switch {
+	case ok:
+		for i := range calls {
+			calls[i].ID = newCallID()
+		}
+		g.toolCalls = calls
+		*out = append(*out, Event{Kind: EventTools, Calls: calls})
+		g.notes[NoteDsmlRecovered] = true
+		g.dsmlSource = ""
+		g.dsmlBuf = ""
+	case IsOrphanDsmlTail(g.dsmlBuf):
+		// Only closing tags arrived (the model collapsed into emitting
+		// </parameter></invoke></calls>).  There is no call to recover,
+		// but this must not be reported as an unparsable tool call: doing
+		// so turned a completely empty response into a hard
+		// THINK_AS_CONTENT failure.
+		g.notes[NoteOrphanDsml] = true
+		g.dsmlSource = ""
+		g.dsmlBuf = ""
+		g.flushContent(out, true)
+	default:
+		if prose, residue := DsmlResidue(g.dsmlBuf); residue {
+			g.notes[NoteOrphanDsml] = true
+			g.dsmlSource = ""
+			g.dsmlBuf = ""
+			if prose != "" {
+				g.content += prose
+			}
+			g.flushContent(out, true)
+			return
+		}
+		g.notes[NoteDsmlUnparsed] = true
+		g.dsmlSource = ""
+		g.dsmlBuf = ""
+	}
 }
 
 // runeBoundary moves i back to the start of a UTF-8 sequence.
