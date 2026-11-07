@@ -514,6 +514,11 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 				streamErr = s.streamDirect(resp.Body, writer, flusher, model, route.ID)
 			}
 			resp.Body.Close()
+			if errors.Is(streamErr, ErrStreamTruncated) {
+				// 适配器路径可能是 Claude/Gemini 客户端，错误帧格式由 router
+				// 的 sendStreamError 按协议生成，这里只负责冷却端点。
+				s.coolDownStreamEndpoint(res, route.ID, streamErr)
+			}
 			return streamErr
 		}
 
@@ -526,6 +531,21 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 			// Bytes already reached the client: a retry would duplicate them.
 			writeSanitizeError(writer, flusher, streamErr)
 			return streamErr
+		}
+		if errors.Is(streamErr, ErrStreamTruncated) {
+			s.coolDownStreamEndpoint(res, route.ID, streamErr)
+			var truncated *StreamTruncatedError
+			alreadyForwarded := errors.As(streamErr, &truncated) && truncated.Forwarded
+			if !alreadyForwarded && len(res.Targets) > 1 && route != nil {
+				// 一个字节都没写出去，还有候选端点：换端点重试是安全的。
+				skip[route.ID] = true
+				lastSanitizeErr = streamErr
+				log.Warnf("[Stream] endpoint=%s truncated the stream before any byte reached the client, failing over", route.Name)
+				continue
+			}
+			writeStreamTruncatedError(writer, flusher, streamErr)
+			// 错误帧已经写出去了，HTTP 层不能再补一条。
+			return &StreamReportedError{Err: streamErr}
 		}
 		if errors.Is(streamErr, errThinkAsContent) || errors.Is(streamErr, errEmptyUpstream) {
 			lastSanitizeErr = streamErr
@@ -970,7 +990,11 @@ func (s *ProxyService) ProxyAnthropicStreamRequest(requestBody []byte, headers m
 	}
 
 	// 直接转发SSE流（目标�?Claude 格式，无需转换�?
-	return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+	streamErr := s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+	if errors.Is(streamErr, ErrStreamTruncated) {
+		s.coolDownStreamEndpoint(res, route.ID, streamErr)
+	}
+	return streamErr
 }
 
 // streamWithAdapter 使用适配器处理流式响�?
@@ -1006,11 +1030,15 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 	var totalPromptTokens int
 	var totalCompletionTokens int
 	var chunkCount int
+	// 累积上游原文，用于在流结束时判断它是正常收尾还是被掐断
+	var rawLines strings.Builder
 
 	log.Infof("[Stream Adapter] Starting to read chunks from backend...")
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		rawLines.WriteString(line)
+		rawLines.WriteString("\n")
 
 		log.Infof("[Stream Adapter] Raw line from backend: %s", line)
 
@@ -1110,6 +1138,15 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 		return err
 	}
 
+	// 上游在既没有 [DONE] 也没有 finish_reason 的情况下结束：不能补一个
+	// 假的结束事件把半截答案包装成正常结果。
+	if outcome := inspectUpstreamStream(rawLines.String()); outcome.Failed() {
+		failure := truncationError(outcome, chunkCount > 0)
+		s.routeService.LogRequest(model, routeID, totalPromptTokens, totalCompletionTokens, totalPromptTokens+totalCompletionTokens, false, failure.Error())
+		log.Errorf("[Stream Adapter] %v (%d chunks already forwarded)", failure, chunkCount)
+		return failure
+	}
+
 	// 发送结束事�?
 	endEvents := adapter.AdaptStreamEnd()
 	for _, event := range endEvents {
@@ -1164,6 +1201,16 @@ func (s *ProxyService) streamDirect(reader io.Reader, writer io.Writer, flusher 
 				promptTokens, completionTokens := s.extractTokensFromStreamResponse(responseStr)
 				totalTokens := promptTokens + completionTokens
 				log.Infof("[Stream Direct] Extracted tokens: prompt=%d, completion=%d, total=%d", promptTokens, completionTokens, totalTokens)
+
+				// 上游可能在没有 [DONE]/finish_reason 的情况下直接断开（中转站掐断长流）。
+				// 以前这里无条件记成功，面板永远绿色，客户端却每轮都死。
+				if outcome := inspectUpstreamStream(responseStr); outcome.Failed() {
+					failure := truncationError(outcome, bytesWritten > 0)
+					log.Errorf("[Stream Direct] %v (%d bytes forwarded, prompt=%d, completion=%d)", failure, bytesWritten, promptTokens, completionTokens)
+					s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, false, failure.Error())
+					return failure
+				}
+
 				s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, true, "")
 				return nil
 			}
@@ -3121,7 +3168,11 @@ func (s *ProxyService) ProxyClaudeCodeStreamRequest(requestBody []byte, headers 
 	} else {
 		// Claude 格式响应，直接透传
 		log.Infof("[Claude Code Stream] Passing through Claude stream response directly")
-		return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+		streamErr := s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+		if errors.Is(streamErr, ErrStreamTruncated) {
+			s.coolDownStreamEndpoint(res, route.ID, streamErr)
+		}
+		return streamErr
 	}
 }
 
@@ -3736,9 +3787,14 @@ func (s *ProxyService) ProxyCursorStreamRequest(requestBody []byte, headers map[
 	}
 
 	// 流式传输响应
+	var streamErr error
 	if adapterName != "" {
-		return s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID)
+		streamErr = s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID)
 	} else {
-		return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+		streamErr = s.streamDirect(resp.Body, writer, flusher, model, route.ID)
 	}
+	if errors.Is(streamErr, ErrStreamTruncated) {
+		s.coolDownStreamEndpoint(res, route.ID, streamErr)
+	}
+	return streamErr
 }

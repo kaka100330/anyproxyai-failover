@@ -60,6 +60,22 @@ client ── model: deepseek-v4.1-flash ──▶ ┌ 优先级 0  官方直连
   - 界面上「冷却中 xx s」的剩余时间同样是滑动的：只要还有请求进来，就会一直显示接近 N 秒。
 - 如果所有端点都在冷却，分组按优先级顺序整体兜底重试一次，不会直接报「无可用端点」。
 - 编辑分组 / 端点、调整优先级后冷却状态立即清空。
+- 分组卡片上的 **重置冷却** 按钮可以随时手动清空该分组的冷却与轮询状态（没有端点冷却时按钮置灰），不必等冷却秒数走完。
+
+### 流式断流检测
+
+一些中转站会在「长推理 + 大段 `tool_calls` 参数」的单条流中途掐断连接，客户端只收到一个 `{"error":{"message":"Upstream request failed"}}`，既没有 `finish_reason` 也没有 `[DONE]`。
+
+代理在每条流结束时检查是否真的收尾（OpenAI `[DONE]` / `finish_reason`、Claude `message_stop` / `stop_reason`、Gemini `finishReason`、非零 `completion_tokens`）：
+
+| 情况 | 行为 |
+| --- | --- |
+| 有完成标记 | 原样透传，记成功 |
+| 无完成标记（断流） | 记 `success=false` 并写明原因；该端点标记失败进入冷却；不再伪造结束事件 |
+| 断流且一个字节都没转发 | 直接换组内下一个端点重试 |
+| 断流且已转发过内容 | 不重试（避免正文重复），给客户端一条 `code: "STREAM_TRUNCATED"` 的错误帧 + `[DONE]` 收尾，并保留上游原始报文 |
+
+上游把 `error` 对象直接塞进流里的形态也会被归一成同一个 `STREAM_TRUNCATED` 帧，客户端只会收到一个 error，不会出现「裸报错 + 代理报错」两条。
 
 ### 重定向
 
@@ -191,6 +207,8 @@ internal/
 └── service/
     ├── proxy_service.go       # 12 个代理入口
     ├── proxy_failover.go      # 目标解析 + 策略排序 + doWithFailover
+    ├── proxy_stream_health.go # 流式断流检测 + 端点冷却 + 干净错误帧
+    ├── proxy_sanitize.go      # 净化通道的流式转发
     ├── failover_service.go    # 分组 / 端点 CRUD + 冷却状态机 + 策略排序
     └── route_service.go       # 路由 CRUD
 frontend/src/

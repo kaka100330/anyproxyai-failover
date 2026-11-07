@@ -24,8 +24,24 @@ All three share the same cooldown / fallthrough / fallback logic — only the fi
 - No failover on `429` or other `4xx` — those are returned to the client as-is.
 - Cooldown is per group (default `600s`) and **sliding**: every request to the group resets the timer to the full cooldown, so a failing endpoint stays skipped while traffic continues, and becomes available again only after the group has been idle for the whole cooldown. The remaining time shown in the UI slides the same way.
 - If every endpoint is cooling, the group retries them in priority order rather than failing outright.
+- A **Reset Cooldown** button on each group card clears that group's cooldown and polling state immediately (greyed out when nothing is cooling).
 - `proxy_auto` (or your custom keyword) can redirect to a failover group **or** to a single ungrouped route.
 - Ungrouped routes behave exactly as upstream: random load balancing across routes sharing a model.
+
+### Stream truncation detection
+
+Some relay services cut a single stream short in the middle of "long reasoning + a multi-KB `tool_calls` argument" and all the client gets is `{"error":{"message":"Upstream request failed"}}` — no `finish_reason`, no `[DONE]`.
+
+Every stream is now checked at EOF for a real completion marker (OpenAI `[DONE]` / `finish_reason`, Claude `message_stop` / `stop_reason`, Gemini `finishReason`, non-zero `completion_tokens`):
+
+| Case | Behaviour |
+| --- | --- |
+| Marker present | Passed through unchanged, logged as success |
+| No marker (truncated) | Logged as `success=false` with the reason; endpoint marked failed and cooled down; no fake end event is synthesised |
+| Truncated before any byte was forwarded | Fails over to the next endpoint in the group |
+| Truncated after content was forwarded | No retry (would duplicate content); the client gets one `code: "STREAM_TRUNCATED"` error frame plus `[DONE]`, keeping the upstream message in `upstream_message` |
+
+An `error` object injected into the stream by the upstream is normalised into the same single `STREAM_TRUNCATED` frame, so clients never see two errors.
 
 ### 2. Concurrency
 

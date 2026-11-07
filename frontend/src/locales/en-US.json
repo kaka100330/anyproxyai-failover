@@ -283,6 +283,9 @@
     "endpointDeleted": "Endpoint deleted",
     "priorityUpdated": "Priority updated",
     "useGroup": "Use Group",
-    "coolingCount": "{n} endpoint(s) cooling"
+    "coolingCount": "{n} endpoint(s) cooling",
+    "resetCooldown": "Reset Cooldown",
+    "cooldownReset": "Cooldown state cleared",
+    "resetCooldownTip": "Clear the cooldown of every endpoint in this group so the next request starts again from the highest priority endpoint"
   }
 }

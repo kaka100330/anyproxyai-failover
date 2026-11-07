@@ -143,6 +143,15 @@ type SSERewriter struct {
 	poison         bool
 	dropReasoning  bool
 	silent         bool
+	// requireCompletion suppresses the synthetic finish frame this rewriter
+	// otherwise emits when the upstream body ends without [DONE]/finish_reason.
+	// A truncated stream must not be closed as a normal answer; the caller
+	// reports the truncation instead.
+	requireCompletion bool
+	// upstreamErr keeps the error object an upstream pushed mid-stream instead
+	// of forwarding it: the client would see a bare "Upstream request failed"
+	// with no explanation of what happened to its answer.
+	upstreamErr string
 }
 
 // SetDropReasoning suppresses reasoning frames (used when retrying a stream
@@ -152,6 +161,22 @@ func (s *SSERewriter) SetDropReasoning(v bool) { s.dropReasoning = v }
 // SetSilent stops the rewriter from writing its own error frame, leaving the
 // decision to the caller.
 func (s *SSERewriter) SetSilent(v bool) { s.silent = v }
+
+// SetRequireCompletion makes the rewriter refuse to synthesise a finish frame
+// when the upstream closes the body without a completion marker. The caller is
+// then responsible for telling the client the answer was cut short.
+func (s *SSERewriter) SetRequireCompletion(v bool) { s.requireCompletion = v }
+
+// UpstreamError returns the error message an upstream pushed inside the stream
+// (it is swallowed instead of forwarded so the caller can report it as part of
+// a truncation verdict).
+func (s *SSERewriter) UpstreamError() string { return s.upstreamErr }
+
+// ForwardedContent reports whether any answer text or tool call already reached
+// the client. A retry is only safe when this is false.
+func (s *SSERewriter) ForwardedContent() bool {
+	return s.guard.EmittedContent() != "" || len(s.guard.ToolCalls()) > 0
+}
 
 // NewSSERewriter wraps an upstream SSE body.
 func NewSSERewriter(r io.Reader) *SSERewriter {
@@ -207,6 +232,13 @@ func (s *SSERewriter) step() error {
 				s.done = true
 				return nil
 			}
+			if s.requireCompletion {
+				// The upstream body ended without [DONE]/finish_reason. Do not
+				// fabricate a normal finish: the caller reports the truncation
+				// so the client retries instead of accepting a cut answer.
+				s.done = true
+				return nil
+			}
 			s.writeFinish("stop", nil)
 		}
 		return err
@@ -247,6 +279,18 @@ func (s *SSERewriter) step() error {
 	var chunk map[string]any
 	if jsonErr := json.Unmarshal([]byte(payload), &chunk); jsonErr != nil {
 		s.out.WriteString(line)
+		return nil
+	}
+	if e, ok := chunk["error"].(map[string]any); ok && s.requireCompletion {
+		// The relay station pushed an error object mid-stream and closed the
+		// body. Forwarding it verbatim gives the client a bare "Upstream
+		// request failed"; remember it and let the caller report a truncation
+		// that names the cause.
+		if msg, _ := e["message"].(string); msg != "" {
+			s.upstreamErr = msg
+		} else {
+			s.upstreamErr = payload
+		}
 		return nil
 	}
 	for _, k := range []string{"id", "object", "created", "model", "system_fingerprint"} {

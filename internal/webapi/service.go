@@ -164,6 +164,16 @@ func (s *Service) DeleteFailoverGroup(id int64) error {
 	return err
 }
 
+// ResetFailoverCooldown 手动清除分组内全部端点的冷却状态与轮询游标。
+func (s *Service) ResetFailoverCooldown(id int64) error {
+	if _, err := s.RouteService.GetFailoverGroupByID(id); err != nil {
+		return err
+	}
+	s.ProxyService.ResetFailoverState(id)
+	log.Infof("[Failover] group %d cooldown manually reset by the user", id)
+	return nil
+}
+
 // AddFailoverEndpoint 向分组添加端点。
 func (s *Service) AddFailoverEndpoint(groupID int64, name, apiUrl, apiKey, format string) error {
 	return s.AddFailoverEndpointWithUpstream(groupID, name, "", apiUrl, apiKey, format)

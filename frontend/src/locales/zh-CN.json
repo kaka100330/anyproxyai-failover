@@ -283,6 +283,9 @@
     "endpointDeleted": "端点已删除",
     "priorityUpdated": "优先级已调整",
     "useGroup": "使用分组",
-    "coolingCount": "{n} 个端点冷却中"
+    "coolingCount": "{n} 个端点冷却中",
+    "resetCooldown": "重置冷却",
+    "cooldownReset": "冷却状态已重置",
+    "resetCooldownTip": "清除该分组所有端点的冷却状态，下一次请求重新从最高优先级端点开始"
   }
 }

@@ -1,5 +1,21 @@
 # 更新日志 / Changelog
 
+## v2.6.0
+
+### 修复
+
+- **流式断流被当成成功（长输出中途被掐断却显示健康）**：一些中转站在长推理 + 大段 `tool_calls` 参数的单条流上会中途掐断连接，客户端只收到一个 `{"error":{"message":"Upstream request failed"}}`，既没有 `finish_reason` 也没有 `[DONE]`。旧实现在 `io.EOF` 处无条件 `LogRequest(..., true, "")`，于是请求日志永远成功、面板永远绿色，而 Agent 会话每轮都死在这里。
+  - 新增 `internal/service/proxy_stream_health.go`：`inspectUpstreamStream()` 在流结束时检查是否出现完成标记（OpenAI `[DONE]` / `finish_reason`、Claude `message_stop` / `stop_reason`、Gemini `finishReason`、非零 `completion_tokens`），缺失即判定为断流（`ErrStreamTruncated`）。
+  - `streamDirect` / `streamDirectSanitized` / `streamWithAdapter` 三条流式路径全部接入：断流时记 `success=false` 并写入具体原因，不再伪造正常收尾（`streamWithAdapter` 也不再补发 `AdaptStreamEnd()`）。
+  - 断流时把该端点标记失败并进入冷却（`MarkFailed`），后续请求自动换到组内下一个端点。若一个字节都还没转发给客户端，直接换端点重试；已经转发过则不再重试（避免正文重复）。
+  - 给客户端返回一条干净的 SSE 错误帧：`code: "STREAM_TRUNCATED"`，并保留上游原始报文（`upstream_message`），随后以 `data: [DONE]` 正常收尾，客户端不会再看到半截流导致的裸断开。
+  - 上游把 `error` 对象塞进流里的形态由 SSE 重写器吞掉并转换成同一个 `STREAM_TRUNCATED` 帧；`IsStreamReported()` 标记避免 HTTP 层再补一条，客户端只会收到一个 error。
+  - 新增单元测试 `proxy_stream_health_test.go`、`proxy_stream_errorframe_test.go`，覆盖完成标记识别、断流判活、端点冷却与换端点、零字节转发换端点、流内 error 帧去重。
+
+### 新增
+
+- **分组卡片「重置冷却」按钮**：分组有端点处于冷却时按钮可用，点击立即清除该分组的全部冷却与轮询状态（无需等待冷却秒数或编辑端点）。后端新增 `ResetFailoverCooldown(id)`（Wails 绑定与 web 控制台 RPC 各一份）。
+
 ## v2.5.0
 
 ### 修复

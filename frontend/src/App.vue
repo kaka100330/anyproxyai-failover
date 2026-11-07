@@ -407,6 +407,16 @@
                           <template #icon><n-icon><EditIcon /></n-icon></template>
                           {{ t('models.edit') }}
                         </n-button>
+                        <n-button
+                          size="small"
+                          type="warning"
+                          :disabled="coolingCount(g) === 0"
+                          :title="t('failover.resetCooldownTip')"
+                          @click="resetGroupCooldown(g)"
+                        >
+                          <template #icon><n-icon><SnowIcon /></n-icon></template>
+                          {{ t('failover.resetCooldown') }}
+                        </n-button>
                         <n-button size="small" type="primary" @click="setGroupAsRedirect(g)">
                           <template #icon><n-icon><LinkIcon /></n-icon></template>
                           {{ t('failover.setAsTarget') }}
@@ -658,7 +668,7 @@
 
                   <n-space align="center">
                     <n-icon size="20"><InformationCircleIcon /></n-icon>
-                    <n-text>{{ t('settings.version') }}: v2.5.0</n-text>
+                    <n-text>{{ t('settings.version') }}: v2.6.0</n-text>
                   </n-space>
 
                   <n-space align="center">
@@ -924,6 +934,7 @@ import {
   Trash as TrashIcon,
   Language as LanguageIcon,
   Archive as ArchiveIcon,
+  Snow as SnowIcon,
 } from '@vicons/ionicons5'
 import AddRouteModal from './components/AddRouteModal.vue'
 import EditRouteModal from './components/EditRouteModal.vue'
@@ -1755,6 +1766,22 @@ const deleteGroup = async (group) => {
     showMessage("success", t('failover.groupDeleted'))
     await loadFailoverGroups()
     await loadRoutes()
+  } catch (error) {
+    showMessage("error", String(error))
+  }
+}
+
+// 手动清除冷却：端点其实已经恢复、但冷却计时被持续流量不断重置时使用，
+// 清掉后下一次请求重新从最高优先级端点开始。
+const resetGroupCooldown = async (group) => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", 'Wails 运行时未就绪')
+    return
+  }
+  try {
+    await window.go.main.App.ResetFailoverCooldown(group.id)
+    showMessage("success", t('failover.cooldownReset'))
+    await loadFailoverGroups()
   } catch (error) {
     showMessage("error", String(error))
   }

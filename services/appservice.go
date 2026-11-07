@@ -243,6 +243,18 @@ func (a *AppService) DeleteFailoverGroup(id int64) error {
 	return err
 }
 
+// ResetFailoverCooldown 手动清除分组内全部端点的冷却状态与轮询游标。
+// 与"编辑端点后自动重置"用的是同一套状态，区别只在于由用户显式触发：
+// 端点其实已经恢复、但冷却计时被持续流量不断重置时，用它立刻回到最高优先级。
+func (a *AppService) ResetFailoverCooldown(id int64) error {
+	if _, err := a.RouteService.GetFailoverGroupByID(id); err != nil {
+		return err
+	}
+	a.ProxyService.ResetFailoverState(id)
+	log.Infof("[Failover] group %d cooldown manually reset by the user", id)
+	return nil
+}
+
 // AddFailoverEndpoint 向分组添加端点
 func (a *AppService) AddFailoverEndpoint(groupID int64, name, apiUrl, apiKey, format string) error {
 	return a.AddFailoverEndpointWithUpstream(groupID, name, "", apiUrl, apiKey, format)

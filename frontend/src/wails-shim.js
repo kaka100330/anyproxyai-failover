@@ -46,6 +46,7 @@ const createWailsShim = () => {
     UpdateFailoverGroup: (id, name, model, cooldownSeconds, strategy, enabled) =>
       callService('UpdateFailoverGroup', id, name, model, cooldownSeconds, strategy || 'failover', enabled),
     DeleteFailoverGroup: (id) => callService('DeleteFailoverGroup', id),
+    ResetFailoverCooldown: (id) => callService('ResetFailoverCooldown', id),
     AddFailoverEndpoint: (groupID, name, apiUrl, apiKey, format) =>
       callService('AddFailoverEndpoint', groupID, name, apiUrl, apiKey, format),
     AddFailoverEndpointWithUpstream: (groupID, name, upstreamModel, apiUrl, apiKey, format) =>

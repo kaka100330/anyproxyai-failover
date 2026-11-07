@@ -84,6 +84,9 @@ func (s *ProxyService) streamDirectSanitized(reader io.Reader, writer io.Writer,
 	// The caller decides how a rejected stream is reported, so the rewriter
 	// stays silent on poison; it still refuses to emit a fake finish.
 	rewriter.SetSilent(true)
+	// A body that ends without [DONE]/finish_reason is a truncation, not an
+	// answer: never let the rewriter close it with a synthetic finish frame.
+	rewriter.SetRequireCompletion(true)
 
 	buf := make([]byte, 4096)
 	var bytesWritten int64
@@ -100,7 +103,8 @@ func (s *ProxyService) streamDirectSanitized(reader io.Reader, writer io.Writer,
 		}
 		if err != nil {
 			if err == io.EOF {
-				promptTokens, completionTokens := s.extractTokensFromStreamResponse(raw.String())
+				rawBody := raw.String()
+				promptTokens, completionTokens := s.extractTokensFromStreamResponse(rawBody)
 				totalTokens := promptTokens + completionTokens
 				if rewriter.Poisoned() {
 					failure := errThinkAsContent
@@ -114,6 +118,18 @@ func (s *ProxyService) streamDirectSanitized(reader io.Reader, writer io.Writer,
 					}
 					s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, false, failure.Error())
 					log.Warnf("[Sanitize] rejected stream (%d bytes forwarded): %s", bytesWritten, strings.Join(rewriter.Notes(), ","))
+					return failure
+				}
+				// 上游没有给出任何结束标记就断流：判定为该端点失败，
+				// 由调用方冷却端点，客户端收到明确的截断错误而不是"成功但答案不完整"。
+				outcome := inspectUpstreamStream(rawBody)
+				if msg := rewriter.UpstreamError(); msg != "" && outcome.UpstreamErr == "" {
+					outcome.UpstreamErr = msg
+				}
+				if outcome.Failed() {
+					failure := truncationError(outcome, bytesWritten > 0)
+					s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, false, failure.Error())
+					log.Errorf("[Sanitize] %v (%d bytes forwarded)", failure, bytesWritten)
 					return failure
 				}
 				log.Debugf("[Sanitize] stream completed, %d bytes forwarded", bytesWritten)

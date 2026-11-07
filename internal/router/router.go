@@ -17,6 +17,15 @@ import (
 // sendStreamError 发送流式错误响应给客户端
 // 支持 OpenAI SSE 格式和 Claude SSE 格式
 func sendStreamError(c *gin.Context, flusher http.Flusher, err error, format string) {
+	// 有些错误（例如上游断流）在服务层已经把错误帧写给客户端了，
+	// 这里再补一条会让严格按 SSE 解析的客户端收到两个 error 对象。
+	if service.IsStreamReported(err) {
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
+	}
+
 	errMsg := err.Error()
 
 	if format == "claude" || format == "anthropic" {
