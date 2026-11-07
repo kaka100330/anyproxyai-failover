@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-2.5.0}"
+VERSION="${VERSION:-2.6.0}"
 OUT="$ROOT/build/server"
 
 echo "==> Building web frontend (mode=web)"

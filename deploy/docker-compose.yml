@@ -1,6 +1,6 @@
 services:
   anyproxyai:
-    image: anyproxyai:2.5.0
+    image: anyproxyai:2.6.0
     container_name: anyproxyai
     restart: unless-stopped
     working_dir: /data
