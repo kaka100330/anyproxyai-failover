@@ -66,7 +66,11 @@ Some OpenAI-compatible upstreams mangle native DeepSeek/Claude output:
 
 The built-in sanitizer (`internal/sanitize`) repairs all three before forwarding: drops duplicated content, moves tagged text back into `reasoning_content`, and parses DSML back into real `tool_calls` (with `finish_reason=tool_calls`). It works for streaming and non-streaming, passes clean responses through untouched, retries once only when a response is provably broken, and fails loudly with `THINK_AS_CONTENT` instead of inventing an answer.
 
+Verdicts are ordered so the client is told what actually broke: `SANITIZE_PARTIAL` (content already sent, never retried) → `STREAM_TRUNCATED` (no completion marker, an endpoint fault) → `THINK_AS_CONTENT` → `DSML_UNPARSED` → `EMPTY_UPSTREAM` → `TRUNCATED_THINKING` (the endpoint burned its whole completion budget on reasoning and never started the answer). Only the verdict of the **last** attempt is reported, so a previous round's sanitizer rejection is never blamed for this round's transport failure.
+
 Toggle: **Settings → Repair thinking leaks**, config key `sanitize_thinking` (default `true`). Only the OpenAI pass-through path is affected; Claude/Gemini adapter paths are unchanged.
+
+**Last-resort restore** (`sanitize_duplicate_restore`, default `true`): when every endpoint in the group only replays its reasoning as content and there is nothing left to fail over to, the proxy hands the withheld text over as the answer with `finish_reason=stop` and logs the request as a success (`duplicate_content_restored` in the proxy log). Giving a questionable answer beats aborting the whole agent turn because of the proxy. Set it to `false` to keep the loud failure.
 
 ## Quick start
 

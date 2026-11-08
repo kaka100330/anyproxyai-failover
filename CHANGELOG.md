@@ -1,5 +1,20 @@
 # 更新日志 / Changelog
 
+## v2.7.0
+
+### 修复
+
+- **会话被「think-as-content」打断的真实原因：判定顺序把断流和空响应都算成了思维链泄漏**。真实会话里 64 次 `THINK_AS_CONTENT` 中，大量请求实际是「端点把整段 completion 预算烧在推理上、正文一个字没出」或「流被中途掐断」，旧实现却统一贴上「上游把推理当正文返回」的标签，既不冷却端点也不换端点，客户端只看到一个与本次故障无关的错误。现在判定顺序改为：已下发正文优先（`SANITIZE_PARTIAL`）→ **完成标记缺失优先（`STREAM_TRUNCATED`）** → 正文复制推理（`THINK_AS_CONTENT`）→ DSML 解析失败（`DSML_UNPARSED`）→ 只有 DSML 残渣（`EMPTY_UPSTREAM`）→ **只有推理没有正文（`TRUNCATED_THINKING`）** → 其它空响应（`EMPTY_UPSTREAM`）。
+- **新增 `TRUNCATED_THINKING` 与 `DSML_UNPARSED` 两个错误码**：前者表示端点烧光预算、只吐了思维链；后者表示文本形式的工具调用没能重建。两者都可换端点重试，客户端与面板能据此区分「模型缺陷」与「端点不健康」。
+- **失败原因串味**：此前最终失败时会把**上一轮** sanitizer 的判定当作最终错误写给客户端，于是本次真正的传输故障被报成 `think-as-content`。现在每轮开始重置判定，只报最后一次尝试的真实原因。
+- **重试时重复下发推理帧**：换端点重试时上游已发过的推理不再重复转发。
+- 请求日志中的失败原因现在附带 sanitizer notes（如 `[notes: content_duplicates_reasoning,empty_after_sanitize]`），不必再复现整条流才能定位。
+
+### 新增
+
+- **兜底补发 `sanitize_duplicate_restore`（默认开启）**：整组端点都只会把思维链复制成正文、已无端点可换时，把持住的文本当正文补发并以 `finish_reason=stop` 收尾，请求记成功，代理日志留 `duplicate_content_restored` 警告。宁可给出一份可疑答案，也不让 Agent 回合因为代理自己而中断；设 `false` 恢复响亮失败。
+- 新增测试 `proxy_sanitize_verdict_test.go`：判定顺序（含断流压过复制、残渣不算思考）、`TRUNCATED_THINKING` 上报、思考烧光后换端点、兜底补发、兜底关闭时响亮失败、上一轮判定不串味。
+
 ## v2.6.0
 
 ### 修复

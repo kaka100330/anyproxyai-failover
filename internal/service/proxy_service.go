@@ -195,6 +195,8 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 	skip := map[int64]bool{}
 
 	for round := 1; round <= maxRounds; round++ {
+		// 同一个道理：只报最后这次尝试的判定，不让上一轮的净化器结果串味。
+		lastSanitizeErr = nil
 		adapterName = ""
 		resp, route, ferr = s.doWithFailoverExcept(res, skip, func(target *database.ModelRoute) (*http.Response, error) {
 			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
@@ -270,14 +272,23 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 				if route != nil && res.Group != nil {
 					s.failover.MarkFailed(res.Group.ID, route.ID)
 				}
-				if len(res.Targets) > 1 && route != nil {
+				othersLeft := 0
+				if route != nil {
+					for _, target := range res.Targets {
+						if target.ID != route.ID && !skip[target.ID] {
+							othersLeft++
+						}
+					}
+				}
+				if route != nil && othersLeft > 0 {
 					skip[route.ID] = true
-					log.Warnf("[Sanitize] endpoint=%s rejected the response (%v), failing over", route.Name, serr)
+					log.Warnf("[Sanitize] endpoint=%s rejected the response (%v), failing over (%d endpoint(s) left)",
+						route.Name, serr, othersLeft)
 					continue
 				}
 				if !retriedSameRoute {
 					retriedSameRoute = true
-					log.Warnf("[Sanitize] retrying endpoint=%s once after sanitizer rejection: %v", route.Name, serr)
+					log.Warnf("[Sanitize] no untried endpoint left, retrying endpoint=%s once: %v", routeName(route), serr)
 					continue
 				}
 				s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, serr.Error())
@@ -435,6 +446,9 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 	skip := map[int64]bool{}
 
 	for round := 1; round <= maxRounds; round++ {
+		// 只报"最后这次尝试"的失败原因：上一轮的净化器判定不能串到这一轮的
+		// 传输错误上（否则客户端会看到与本次失败无关的 think-as-content）。
+		lastSanitizeErr = nil
 		adapterName = ""
 		resp, route, ferr = s.doWithFailoverExcept(res, skip, func(target *database.ModelRoute) (*http.Response, error) {
 			cleanAPIUrl := strings.TrimSuffix(target.APIUrl, "/")
@@ -492,7 +506,7 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 		})
 		if ferr != nil {
 			if lastSanitizeErr != nil {
-				writeSanitizeError(writer, flusher, lastSanitizeErr)
+				writeAnyStreamFailure(writer, flusher, lastSanitizeErr)
 				return lastSanitizeErr
 			}
 			return ferr
@@ -522,14 +536,18 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 			return streamErr
 		}
 
-		streamErr := s.streamDirectSanitized(resp.Body, writer, flusher, model, route.ID, round > 1)
+		// 兜底补发只在"这已经是最后一次尝试"时开放：先把组里的端点换完，
+		// 换不动了才考虑把重复的正文交给客户端 —— 宁可给出可疑答案，也不要
+		// 让整个 agent 回合被代理自己掐断。
+		allowRestore := s.sanitizeDuplicateRestoreEnabled() && retriedSameRoute
+		streamErr := s.streamDirectSanitized(resp.Body, writer, flusher, model, route.ID, round > 1, allowRestore)
 		resp.Body.Close()
 		if streamErr == nil {
 			return nil
 		}
 		if errors.Is(streamErr, errSanitizePartial) {
 			// Bytes already reached the client: a retry would duplicate them.
-			writeSanitizeError(writer, flusher, streamErr)
+			writeSanitizeError(writer, flusher, streamErr, nil)
 			return streamErr
 		}
 		if errors.Is(streamErr, ErrStreamTruncated) {
@@ -547,19 +565,32 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 			// 错误帧已经写出去了，HTTP 层不能再补一条。
 			return &StreamReportedError{Err: streamErr}
 		}
-		if errors.Is(streamErr, errThinkAsContent) || errors.Is(streamErr, errEmptyUpstream) {
+		if errors.Is(streamErr, errThinkAsContent) || errors.Is(streamErr, errEmptyUpstream) ||
+			errors.Is(streamErr, errDsmlUnparsed) || errors.Is(streamErr, errTruncatedThinking) {
 			lastSanitizeErr = streamErr
 			if route != nil && res.Group != nil {
 				s.failover.MarkFailed(res.Group.ID, route.ID)
 			}
-			if len(res.Targets) > 1 && route != nil {
+			// 组里还有没试过的端点就先换端点；都试过了才允许"同一端点再试一次"，
+			// 那一次带着兜底补发（allowRestore），保证最后一根稻草不会被丢掉。
+			othersLeft := 0
+			if route != nil {
+				for _, target := range res.Targets {
+					if target.ID != route.ID && !skip[target.ID] {
+						othersLeft++
+					}
+				}
+			}
+			if route != nil && othersLeft > 0 {
 				skip[route.ID] = true
-				log.Warnf("[Sanitize] endpoint=%s rejected the response (%v), failing over", route.Name, streamErr)
+				log.Warnf("[Sanitize] endpoint=%s rejected the response (%v), failing over (%d endpoint(s) left)",
+					route.Name, streamErr, othersLeft)
 				continue
 			}
 			if !retriedSameRoute {
 				retriedSameRoute = true
-				log.Warnf("[Sanitize] retrying endpoint=%s once after sanitizer rejection: %v", route.Name, streamErr)
+				log.Warnf("[Sanitize] no untried endpoint left, retrying endpoint=%s once before restoring the withheld content: %v",
+					routeName(route), streamErr)
 				continue
 			}
 			break
@@ -567,10 +598,18 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 		return streamErr
 	}
 	if lastSanitizeErr != nil {
-		writeSanitizeError(writer, flusher, lastSanitizeErr)
+		writeAnyStreamFailure(writer, flusher, lastSanitizeErr)
 		return lastSanitizeErr
 	}
 	return nil
+}
+
+// routeName is a nil-safe label for log lines.
+func routeName(route *database.ModelRoute) string {
+	if route == nil {
+		return "<none>"
+	}
+	return route.Name
 }
 
 // ProxyStreamRequestWithAdapter 代理流式请求，使用指定的适配�?

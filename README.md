@@ -133,14 +133,25 @@ client ── model: deepseek-v4.1-flash ──▶ ┌ 优先级 0  官方直连
 - 清除历史正文里残留的 `<thinking>` / `<think>` / `<analysis>` 片段；
 - 丢弃只剩标签残片、且没有 `tool_calls` 的空 assistant 轮次。
 
+**失败判定顺序**（决定客户端看到哪个错误码）：
+
+1. 已经下发过正文 → `SANITIZE_PARTIAL`，不重试（重试会重复正文）；
+2. 流没有完成标记就断了 → `STREAM_TRUNCATED`（这是端点故障，不是模型问题，先判它）；
+3. `content` 逐字复制 `reasoning_content` → `THINK_AS_CONTENT`；
+4. DSML 调用块解析不出来 → `DSML_UNPARSED`；
+5. 只有 DSML 闭合残渣 → `EMPTY_UPSTREAM`；
+6. 只有推理、正文一个字都没有 → `TRUNCATED_THINKING`（思考烧光了 completion 预算）；
+7. 其余空响应 → `EMPTY_UPSTREAM`。
+
 **失败与故障转移**：
 
-- 只有包含真实 `invoke` 但无法解析的 DSML 才判为失败；纯闭合残片记为 `dsml_orphan_tail_dropped`，按空响应处理；
-- sanitizer 判定失败时，标记该端点失败并**切换到分组内的下一个端点**，而不是在同一端点反复重试；
-- 已经向客户端下发过正文后才失败，返回 `SANITIZE_PARTIAL` 且不重试（重试会重复正文）；
-- 错误码区分 `THINK_AS_CONTENT`（思维链当正文）、`EMPTY_UPSTREAM`（空响应 / 只有残片）、`SANITIZE_PARTIAL`（部分输出后失败），客户端可据此判断是模型问题还是端点健康问题。
+- 标记该端点失败并**切换到分组内的下一个端点**，而不是在同一端点反复重试；
+- `TRUNCATED_THINKING` / `THINK_AS_CONTENT` / `EMPTY_UPSTREAM` / `DSML_UNPARSED` 都会换端点；重试时上游已下发过的推理帧不再重复下发；
+- 只报**最后一次尝试**的判定：上一轮的净化器判定不会串到这一轮的传输故障上（否则客户端会看到一个与本次失败无关的 `THINK_AS_CONTENT`）。
 
-开关在 **设置 → 修复思维链泄漏（Think as content）**，对应配置文件字段 `sanitize_thinking`，默认开启。旧配置缺该键时也按开启处理。
+**兜底补发（`sanitize_duplicate_restore`，默认开启）**：当分组里所有端点都只会把思维链复制成正文、已经没有端点可换时，代理会把持住的文本当作正文补发，并以 `finish_reason=stop` 正常收尾——宁可给出一份可疑答案，也不要让整个 Agent 回合因为代理自己而中断。请求日志记成功，同时在代理日志里留一条 `duplicate_content_restored` 警告。设 `false` 则保持响亮失败。
+
+开关在 **设置 → 修复思维链泄漏（Think as content）**，对应配置文件字段 `sanitize_thinking`，默认开启；兜底补发对应 `sanitize_duplicate_restore`，默认开启。旧配置缺这两个键时都按开启处理。
 
 > 响应净化只作用于 OpenAI 格式直连路径（无格式转换）。Claude / Gemini 适配器路径保持原行为；请求侧历史清理覆盖所有路径。
 

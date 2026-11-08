@@ -26,7 +26,11 @@ type Config struct {
 	AutoStart             bool   `json:"auto_start"`
 	EnableFileLog         bool   `json:"enable_file_log"`
 	SanitizeThinking      bool   `json:"sanitize_thinking"`
-	Language              string `json:"language"`
+	// SanitizeDuplicateRestore 决定「正文是思维链副本」这类响应在整组端点都失败
+	// 之后是否还要兜底：把持住的文本当正文补发（保住这一轮），而不是给客户端
+	// 一个空内容 + 致命错误。默认开启。
+	SanitizeDuplicateRestore bool   `json:"sanitize_duplicate_restore"`
+	Language                 string `json:"language"`
 
 	// Web 管理界面（前后端分离部署时使用）
 	WebRoot       string `json:"web_root"`
@@ -72,23 +76,24 @@ func LoadConfig() *Config {
 	configPath := "config.json"
 
 	cfg := &Config{
-		Host:                  "localhost",
-		Port:                  5642,
-		DatabasePath:          "routes.db",
-		LocalAPIKey:           "sk-local-default-key",
-		RedirectEnabled:       false,
-		RedirectKeyword:       "proxy_auto",
-		RedirectTargetModel:   "",
-		RedirectTargetName:    "",
-		RedirectTargetRouteID: 0,
-		MinimizeToTray:        true,
-		AutoStart:             false,
-		EnableFileLog:         false,
-		SanitizeThinking:      true,
-		Language:              "en-US",
-		WebRoot:               "web",
-		AdminUsername:         "admin",
-		configPath:            configPath,
+		Host:                     "localhost",
+		Port:                     5642,
+		DatabasePath:             "routes.db",
+		LocalAPIKey:              "sk-local-default-key",
+		RedirectEnabled:          false,
+		RedirectKeyword:          "proxy_auto",
+		RedirectTargetModel:      "",
+		RedirectTargetName:       "",
+		RedirectTargetRouteID:    0,
+		MinimizeToTray:           true,
+		AutoStart:                false,
+		EnableFileLog:            false,
+		SanitizeThinking:         true,
+		SanitizeDuplicateRestore: true,
+		Language:                 "en-US",
+		WebRoot:                  "web",
+		AdminUsername:            "admin",
+		configPath:               configPath,
 	}
 
 	// 尝试从文件加载配置
@@ -113,6 +118,7 @@ func LoadConfig() *Config {
 	envString("ANYPROXY_ADMIN_PASSWORD", &cfg.AdminPassword)
 	envString("ANYPROXY_SESSION_SECRET", &cfg.SessionSecret)
 	envBool("ANYPROXY_SANITIZE_THINKING", &cfg.SanitizeThinking)
+	envBool("ANYPROXY_SANITIZE_DUPLICATE_RESTORE", &cfg.SanitizeDuplicateRestore)
 	envBool("ANYPROXY_ENABLE_FILE_LOG", &cfg.EnableFileLog)
 
 	if cfg.AdminUsername == "" {

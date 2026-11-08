@@ -13,5 +13,6 @@
   "auto_start": false,
   "enable_file_log": false,
   "sanitize_thinking": true,
+  "sanitize_duplicate_restore": true,
   "language": "zh-CN"
 }

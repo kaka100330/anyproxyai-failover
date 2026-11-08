@@ -46,6 +46,12 @@ const (
 	NoteOrphanDsml       = "dsml_orphan_tail_dropped"
 	NoteThinkingTagTaken = "thinking_tag_extracted"
 	NoteChannelCleaned   = "channel_delimiters_cleaned"
+	// NoteDuplicateRestored is the last-resort verdict: the content channel was
+	// a copy of the reasoning, but every endpoint had already failed, so the
+	// withheld text was handed to the client instead of an empty error. It is
+	// never set by the guard itself — the caller flips it via
+	// RestoreWithheldContent so the failure path stays the default.
+	NoteDuplicateRestored = "duplicate_content_restored"
 )
 
 var markers = []string{"<｜｜DSML｜｜", "<|DSML|", "<｜DSML｜>", "</｜｜DSML｜｜", "</|DSML|", "</｜DSML｜>"}
@@ -210,7 +216,7 @@ func NewGuard() *Guard {
 // Notes returns the notes collected so far.
 func (g *Guard) Notes() []string {
 	out := make([]string, 0, len(g.notes))
-	for _, k := range []string{NoteThinkingTagTaken, NoteChannelCleaned, NoteDuplicate, NoteDsmlRecovered, NoteDsmlUnparsed, NoteOrphanDsml, NoteEmptyAfter} {
+	for _, k := range []string{NoteThinkingTagTaken, NoteChannelCleaned, NoteDuplicate, NoteDsmlRecovered, NoteDsmlUnparsed, NoteOrphanDsml, NoteEmptyAfter, NoteDuplicateRestored} {
 		if g.notes[k] {
 			out = append(out, k)
 		}
@@ -222,6 +228,36 @@ func (g *Guard) Notes() []string {
 // treat as failed rather than as a valid answer.
 func (g *Guard) Retryable() bool {
 	return g.notes[NoteDuplicate] || g.notes[NoteEmptyAfter] || g.notes[NoteDsmlUnparsed]
+}
+
+// RestoreWithheldContent flushes the content channel that was suppressed
+// because it duplicated the reasoning.
+//
+// It is the last-resort recovery for a poisoned response: once every endpoint
+// of the group has failed there is nothing left to fail over to, and an error
+// frame only ends the client's turn with an empty answer. Handing over the
+// withheld text at least keeps the turn alive, and the
+// duplicate_content_restored note makes the compromise visible in the logs.
+//
+// It returns nil when there is nothing withheld (content was already emitted,
+// or the poison came from something other than duplication).
+func (g *Guard) RestoreWithheldContent() []Event {
+	if !g.notes[NoteDuplicate] || g.emittedContent != "" {
+		return nil
+	}
+	if g.dsmlSource != "" {
+		// A tool-call block took over the buffer; replaying it as text would
+		// spill DSML markers into the answer.
+		return nil
+	}
+	g.dup = false
+	var out []Event
+	g.flushContent(&out, true)
+	if g.emittedContent == "" {
+		return nil
+	}
+	g.notes[NoteDuplicateRestored] = true
+	return out
 }
 
 // EmittedContent is the sanitized answer text handed to the client.

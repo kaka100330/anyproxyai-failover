@@ -200,6 +200,25 @@ func (s *SSERewriter) Notes() []string { return s.guard.Notes() }
 // content has been forwarded, a retry would duplicate the partial answer.
 func (s *SSERewriter) EmittedContent() string { return s.guard.EmittedContent() }
 
+// EmittedReasoning reports the reasoning text already written to the client.
+// A rejection that forwarded reasoning but no answer means the upstream burned
+// its budget on thinking, which is a different fault from "no output at all".
+func (s *SSERewriter) EmittedReasoning() string { return s.guard.EmittedReasoning() }
+
+// RestoreWithheldContent replays content the guard withheld as a duplicate of
+// the reasoning. See Guard.RestoreWithheldContent.
+func (s *SSERewriter) RestoreWithheldContent() []Event { return s.guard.RestoreWithheldContent() }
+
+// Meta returns the response envelope fields (id, created, model) seen so far,
+// so a caller that emits frames of its own can keep them consistent.
+func (s *SSERewriter) Meta() map[string]any {
+	out := make(map[string]any, len(s.base))
+	for k, v := range s.base {
+		out[k] = v
+	}
+	return out
+}
+
 // Read implements io.Reader.
 func (s *SSERewriter) Read(p []byte) (int, error) {
 	for s.out.Len() == 0 && !s.done {
