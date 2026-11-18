@@ -175,8 +175,14 @@ func (s *SSERewriter) UpstreamError() string { return s.upstreamErr }
 // ForwardedContent reports whether any answer text or tool call already reached
 // the client. A retry is only safe when this is false.
 func (s *SSERewriter) ForwardedContent() bool {
-	return s.guard.EmittedContent() != "" || len(s.guard.ToolCalls()) > 0
+	return s.guard.EmittedContent() != "" || s.guard.ForwardedToolCalls()
 }
+
+// ForwardedToolCalls reports whether a tool call already reached the client.
+// A sanitizer verdict reached after that point must not trigger a failover:
+// the next endpoint would append its own call and the client, which
+// concatenates arguments per index, would end up with two JSON objects.
+func (s *SSERewriter) ForwardedToolCalls() bool { return s.guard.ForwardedToolCalls() }
 
 // NewSSERewriter wraps an upstream SSE body.
 func NewSSERewriter(r io.Reader) *SSERewriter {
@@ -407,7 +413,7 @@ func (s *SSERewriter) emitEvents(events []Event) {
 			calls := make([]any, 0, len(ev.Calls))
 			for i, c := range ev.Calls {
 				calls = append(calls, map[string]any{
-					"index": i,
+					"index": i + ev.IndexBase,
 					"id":    c.ID,
 					"type":  "function",
 					"function": map[string]any{

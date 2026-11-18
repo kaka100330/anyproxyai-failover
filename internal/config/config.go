@@ -30,7 +30,11 @@ type Config struct {
 	// 之后是否还要兜底：把持住的文本当正文补发（保住这一轮），而不是给客户端
 	// 一个空内容 + 致命错误。默认开启。
 	SanitizeDuplicateRestore bool   `json:"sanitize_duplicate_restore"`
-	Language                 string `json:"language"`
+	// SanitizePartialGraceful 决定「正文已经发出去、上游却是正常收尾」这种
+	// 情况怎么收场：断开时补一个 finish 帧体面结束，还是给客户端一个
+	// SANITIZE_PARTIAL 错误帧（agent 客户端会把后者当成整轮失败）。默认开启。
+	SanitizePartialGraceful bool   `json:"sanitize_partial_graceful"`
+	Language                string `json:"language"`
 
 	// Web 管理界面（前后端分离部署时使用）
 	WebRoot       string `json:"web_root"`
@@ -90,6 +94,7 @@ func LoadConfig() *Config {
 		EnableFileLog:            false,
 		SanitizeThinking:         true,
 		SanitizeDuplicateRestore: true,
+		SanitizePartialGraceful:  true,
 		Language:                 "en-US",
 		WebRoot:                  "web",
 		AdminUsername:            "admin",
@@ -119,6 +124,7 @@ func LoadConfig() *Config {
 	envString("ANYPROXY_SESSION_SECRET", &cfg.SessionSecret)
 	envBool("ANYPROXY_SANITIZE_THINKING", &cfg.SanitizeThinking)
 	envBool("ANYPROXY_SANITIZE_DUPLICATE_RESTORE", &cfg.SanitizeDuplicateRestore)
+	envBool("ANYPROXY_SANITIZE_PARTIAL_GRACEFUL", &cfg.SanitizePartialGraceful)
 	envBool("ANYPROXY_ENABLE_FILE_LOG", &cfg.EnableFileLog)
 
 	if cfg.AdminUsername == "" {

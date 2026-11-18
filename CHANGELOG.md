@@ -1,5 +1,23 @@
 # 更新日志 / Changelog
 
+## v2.7.1
+
+### 修复
+
+- **工具调用参数被拼坏（客户端报 `Unexpected non-whitespace character after JSON`）**。客户端按 `index` 累加 `tool_calls[].function.arguments`，只要同一个 `index` 上出现第二段 JSON，两个对象就会被粘成 `{...}{...}`。净化器有两条路径会制造这种重叠：
+  - **正文里的 DSML 文本与原生调用撞车**：模型有时先用原生 `tool_calls` 流出调用，再把同一个调用以 DSML 文本写进正文。净化器把文本也恢复成一个调用，且恢复出来的 `index` **永远从 0 重新编号**，于是 index 0 同时承载两段参数。现在 guard 记录上游已占用的槽位数（`nativeToolCount`），文本副本被识别为重复渲染后直接抑制（notes 记 `dsml_text_suppressed_duplicate_of_native_calls`）；超出原生数量的调用排到原生槽位之后（新增 `Event.IndexBase`），不再抢 0。
+  - **调用已下发后仍然换端点**：`tool_calls` 字节已到达客户端后，净化器才得出「可重试」判定（`THINK_AS_CONTENT` / `EMPTY_UPSTREAM` / `DSML_UNPARSED` / `TRUNCATED_THINKING`），于是 failover 到下一个端点，新端点又从 index 0 发自己的调用，同样被拼接。现在一旦有用工具调用下发（`ForwardedToolCalls()`，含原生与恢复两条来源），这类判定统一下降级为 `SANITIZE_PARTIAL`：保留客户端已收到的那一次调用，不再换端点。
+  - `SSERewriter.ForwardedContent()` 此前漏算了原生 `tool_calls`，且是死代码；现在计入原生调用并在判定处真正使用。
+
+- **正文复述自己思考的前缀被误判成「整段复制」**。旧实现在 `appendContent` 里一旦发现 `content` 是 `reasoning` 的前缀就进入静默缓冲，而正文随后**写下去真实答案**（分叉）时，代码把「分叉」当成「确证重复」，置 `content_duplicates_reasoning` 并把已缓冲的正文一次性 flush 给客户端 —— 客户端已拿到正文、响应又被标成 poison，`classifySanitizeFailure` 首判「已下发正文」就返回 `SANITIZE_PARTIAL`，整轮因此失败。现在分叉视为「只是开头复述了思考」，记 `content_echoes_reasoning_prefix` 后照常输出，不再 poison、不再重试；真正的整段复制（正文始终是推理的前缀）判定不变，仍然后置 `content_duplicates_reasoning` 并按原逻辑静默/兜底。
+
+- **已下发正文的响应不再被错误帧打死**。新增 `sanitize_partial_graceful`（默认开启，env `ANYPROXY_SANITIZE_PARTIAL_GRACEFUL`）：当响应被判定为 `SANITIZE_PARTIAL` 且上游其实是正常收尾（不缺完成标记、流内无 error 对象）时，只用 `finish_reason:stop` + `[DONE]` 收尾并记成功，不再给客户端一条 error 帧。净化器依旧不会凭空造内容，只是不再让一个已经到手的答案变成整轮失败；真正的断流仍然报 `STREAM_TRUNCATED`。
+
+### 新增
+
+- sanitizer notes：`content_echoes_reasoning_prefix`、`dsml_text_suppressed_duplicate_of_native_calls`。
+- 测试：`sanitize/toolcall_index_test.go`（文本副本抑制、恢复调用让位到空 index）、`service/toolcall_forward_test.go`（调用已下发时不换端点，关掉修复会复现 `{...}{...}` 拼接）。
+
 ## v2.7.0
 
 ### 修复

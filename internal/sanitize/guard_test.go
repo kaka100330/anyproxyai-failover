@@ -258,3 +258,94 @@ func TestDsmlTailWithProseKeepsProse(t *testing.T) {
 		t.Fatalf("notes = %v", g.Notes())
 	}
 }
+
+// 线上真实形态：上游先把一大段思考流出来，正文开头复述了思考的前几个词，
+// 随后继续往下写真正的答案。复述之后的分叉恰好证明它不是副本——旧代码在
+// 这里判成 content_duplicates_reasoning，把已经发出去的正文又贴上一个失败
+// 标签，客户端于是先收到答案、再收到 SANITIZE_PARTIAL。
+func TestStreamedPrefixEchoThenAnswerIsNotADuplicate(t *testing.T) {
+	reasoning := "用户让我确认 5642 端口是不是在监听。先看 netstat，再用 PowerShell 的 " +
+		"Get-NetTCPConnection 交叉验证，然后把结果和 PID 一起报给他。"
+	prefix := strings.TrimRight(string([]rune(reasoning)[:24]), " ")
+	answer := "5642 端口确实在监听，进程 PID 是 6352，路径 D:\\anyproxyai\\anyproxyai-windows-amd64.exe。"
+
+	var chunks []map[string]any
+	for _, part := range splitRunes(reasoning, 9) {
+		chunks = append(chunks, rchunk(part))
+	}
+	// 正文先复述思考开头，再分叉成真实答案。
+	for _, part := range splitRunes(prefix+" 结论是：", 5) {
+		chunks = append(chunks, chunk(part))
+	}
+	for _, part := range splitRunes(answer, 6) {
+		chunks = append(chunks, chunk(part))
+	}
+
+	events, g := streamOf(chunks)
+	want := prefix + " 结论是：" + answer
+	if got := textOf(events, EventContent); got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	notes := strings.Join(g.Notes(), ",")
+	if strings.Contains(notes, NoteDuplicate) {
+		t.Fatalf("an answer that only echoed the reasoning prefix must not be a duplicate copy: %v", g.Notes())
+	}
+	if !strings.Contains(notes, NotePrefixEcho) {
+		t.Fatalf("notes = %v, want %s", g.Notes(), NotePrefixEcho)
+	}
+	if g.Retryable() {
+		t.Fatalf("an echoed prefix is not a defect, the response must not be retried: %v", g.Notes())
+	}
+}
+
+// 前缀复述只用掉一次怀疑额度：后面正文再怎么和思考撞前缀，也不该被重新
+// 当成副本，否则同一段回答会被反复扣住。
+func TestStreamedEchoDoesNotRearmDuplicateCheck(t *testing.T) {
+	reasoning := strings.Repeat("先检查端口，再检查路由表，最后核对 failover 组。", 3)
+	prefix := string([]rune(reasoning)[:30])
+
+	var chunks []map[string]any
+	for _, part := range splitRunes(reasoning, 11) {
+		chunks = append(chunks, rchunk(part))
+	}
+	for _, part := range splitRunes(prefix+" 答案是 5642。", 4) {
+		chunks = append(chunks, chunk(part))
+	}
+	// 第二段正文再次以思考的前缀开头，但依然继续往下写。
+	for _, part := range splitRunes(prefix+" 补充：PID 6352。", 4) {
+		chunks = append(chunks, chunk(part))
+	}
+
+	events, g := streamOf(chunks)
+	want := prefix + " 答案是 5642。" + prefix + " 补充：PID 6352。"
+	if got := textOf(events, EventContent); got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if notes := strings.Join(g.Notes(), ","); strings.Contains(notes, NoteDuplicate) {
+		t.Fatalf("notes = %v, the echoed prefix must not be re-judged as a copy", g.Notes())
+	}
+	if g.Retryable() {
+		t.Fatalf("notes = %v, want a plain answer", g.Notes())
+	}
+}
+
+// 反面：正文从头到尾都是思考的副本，仍然必须扣住并允许换端点，不能因为
+// 放宽"前缀复述"而把真正的 think-as-content 放过去。
+func TestStreamedFullCopyStillWithheld(t *testing.T) {
+	var chunks []map[string]any
+	for _, part := range splitRunes(testReasoning, 13) {
+		chunks = append(chunks, rchunk(part))
+	}
+	chunks = append(chunks, chunk(testReasoning))
+
+	events, g := streamOf(chunks)
+	if got := textOf(events, EventContent); got != "" {
+		t.Fatalf("content leaked: %q", got)
+	}
+	if !strings.Contains(strings.Join(g.Notes(), ","), NoteDuplicate) {
+		t.Fatalf("notes = %v, want %s", g.Notes(), NoteDuplicate)
+	}
+	if !g.Retryable() {
+		t.Fatalf("notes = %v, want retryable", g.Notes())
+	}
+}
