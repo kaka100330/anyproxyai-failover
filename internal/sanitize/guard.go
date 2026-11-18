@@ -39,13 +39,22 @@ const dupMin = 24
 
 // Notes reported when a defect was found.
 const (
-	NoteDuplicate        = "content_duplicates_reasoning"
-	NoteEmptyAfter       = "empty_after_sanitize"
-	NoteDsmlRecovered    = "dsml_recovered"
-	NoteDsmlUnparsed     = "dsml_unparsed"
-	NoteOrphanDsml       = "dsml_orphan_tail_dropped"
-	NoteThinkingTagTaken = "thinking_tag_extracted"
-	NoteChannelCleaned   = "channel_delimiters_cleaned"
+	NoteDuplicate     = "content_duplicates_reasoning"
+	NoteEmptyAfter    = "empty_after_sanitize"
+	NoteDsmlRecovered = "dsml_recovered"
+	NoteDsmlUnparsed  = "dsml_unparsed"
+	// NoteDsmlTextSuppressed records that a textual DSML rendering of tool
+	// calls the upstream had already streamed natively was dropped instead of
+	// being forwarded a second time.
+	NoteDsmlTextSuppressed = "dsml_text_suppressed_duplicate_of_native_calls"
+	NoteOrphanDsml         = "dsml_orphan_tail_dropped"
+	NoteThinkingTagTaken   = "thinking_tag_extracted"
+	NoteChannelCleaned     = "channel_delimiters_cleaned"
+	// NotePrefixEcho records the harmless case: the answer opened by echoing
+	// the first few words of the reasoning and then went on to say something
+	// new. Divergence proves it is not a copy, so this note is a log marker
+	// only — it never poisons a response and never makes one retryable.
+	NotePrefixEcho = "content_echoes_reasoning_prefix"
 	// NoteDuplicateRestored is the last-resort verdict: the content channel was
 	// a copy of the reasoning, but every endpoint had already failed, so the
 	// withheld text was handed to the client instead of an empty error. It is
@@ -80,6 +89,10 @@ type Event struct {
 	// Passthrough means the calls came from the upstream tool_calls delta and
 	// must be forwarded untouched.
 	Passthrough bool
+	// IndexBase is the first tool-call slot these calls occupy. It is non-zero
+	// when the upstream already streamed its own calls in this message, so a
+	// recovered call cannot silently take index 0 again.
+	IndexBase int
 }
 
 // guardCallSeq keeps reconstructed tool-call ids unique inside one process.
@@ -201,7 +214,13 @@ type Guard struct {
 	dsmlBuf    string
 
 	upstreamTools bool
-	toolCalls     []ToolCall
+	// nativeToolCount is the number of tool-call slots the upstream itself
+	// already streamed (highest delta index + 1). Recovered DSML calls must not
+	// reuse those slots: a client concatenates arguments per index, so a second
+	// call on index 0 turns two JSON objects into one unparsable string.
+	nativeToolCount int
+
+	toolCalls []ToolCall
 
 	emittedContent   string
 	emittedReasoning string
@@ -216,7 +235,7 @@ func NewGuard() *Guard {
 // Notes returns the notes collected so far.
 func (g *Guard) Notes() []string {
 	out := make([]string, 0, len(g.notes))
-	for _, k := range []string{NoteThinkingTagTaken, NoteChannelCleaned, NoteDuplicate, NoteDsmlRecovered, NoteDsmlUnparsed, NoteOrphanDsml, NoteEmptyAfter, NoteDuplicateRestored} {
+	for _, k := range []string{NoteThinkingTagTaken, NoteChannelCleaned, NotePrefixEcho, NoteDuplicate, NoteDsmlRecovered, NoteDsmlTextSuppressed, NoteDsmlUnparsed, NoteOrphanDsml, NoteEmptyAfter, NoteDuplicateRestored} {
 		if g.notes[k] {
 			out = append(out, k)
 		}
@@ -269,6 +288,11 @@ func (g *Guard) EmittedReasoning() string { return g.emittedReasoning }
 // ToolCalls returns the reconstructed calls, nil when none were found.
 func (g *Guard) ToolCalls() []ToolCall { return g.toolCalls }
 
+// ForwardedToolCalls reports whether any tool call reached the client, whether
+// it came from the upstream's own deltas or was recovered from text. Once that
+// happened a retry would append a second answer to the same message.
+func (g *Guard) ForwardedToolCalls() bool { return g.upstreamTools || len(g.toolCalls) > 0 }
+
 // HasOutput reports whether anything other than reasoning was emitted.
 func (g *Guard) HasOutput() bool {
 	return g.emittedContent != "" || len(g.toolCalls) > 0 || g.upstreamTools
@@ -285,6 +309,16 @@ func (g *Guard) Push(reasoning, content string, toolCalls []any) []Event {
 	}
 	if len(toolCalls) > 0 {
 		g.upstreamTools = true
+		for _, raw := range toolCalls {
+			if tc, ok := raw.(map[string]any); ok {
+				if idx, ok := tc["index"].(float64); ok && int(idx)+1 > g.nativeToolCount {
+					g.nativeToolCount = int(idx) + 1
+				}
+			}
+		}
+		if g.nativeToolCount == 0 {
+			g.nativeToolCount = len(toolCalls)
+		}
 		out = append(out, Event{Kind: EventTools, Passthrough: true})
 	}
 	return out
@@ -394,13 +428,19 @@ func (g *Guard) appendContent(chunk string, out *[]Event) {
 		g.dsmlBuf += chunk
 		return
 	}
-	if !g.dup && g.reasoning != "" && len(g.content) >= dupMin && strings.HasPrefix(g.reasoning, g.content) {
+	if !g.dup && !g.notes[NotePrefixEcho] && g.reasoning != "" && len(g.content) >= dupMin && strings.HasPrefix(g.reasoning, g.content) {
 		g.dup = true
 	}
 	if g.dup {
 		if !strings.HasPrefix(g.reasoning, g.content) {
+			// The answer echoed the opening of the reasoning and then kept
+			// going with something new. That divergence is the proof it is
+			// *not* a copy: releasing the buffer as an ordinary answer is the
+			// only correct reading. Treating it as a confirmed duplicate — and
+			// flushing it as one — is what used to hand the client an answer
+			// and then a SANITIZE_PARTIAL error for the same response.
 			g.dup = false
-			g.notes[NoteDuplicate] = true
+			g.notes[NotePrefixEcho] = true
 			g.flushContent(out, true)
 		}
 		return
@@ -512,11 +552,27 @@ func (g *Guard) finishDsml(out *[]Event) {
 	calls, ok := parseDsml(g.dsmlBuf)
 	switch {
 	case ok:
+		// The upstream may have streamed the same calls natively and then
+		// repeated them as DSML text. Forwarding the text would duplicate the
+		// call; renumbering it into a free slot would run the tool twice. Only
+		// calls the native stream did not cover are kept, and they are placed
+		// after the native slots so arguments never share an index.
+		if g.nativeToolCount > 0 && len(calls) <= g.nativeToolCount {
+			g.notes[NoteDsmlTextSuppressed] = true
+			g.dsmlSource = ""
+			g.dsmlBuf = ""
+			return
+		}
+		base := 0
+		if g.nativeToolCount > 0 {
+			calls = calls[g.nativeToolCount:]
+			base = g.nativeToolCount
+		}
 		for i := range calls {
 			calls[i].ID = newCallID()
 		}
 		g.toolCalls = calls
-		*out = append(*out, Event{Kind: EventTools, Calls: calls})
+		*out = append(*out, Event{Kind: EventTools, Calls: calls, IndexBase: base})
 		g.notes[NoteDsmlRecovered] = true
 		g.dsmlSource = ""
 		g.dsmlBuf = ""

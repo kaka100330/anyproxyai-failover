@@ -56,6 +56,14 @@ func (s *ProxyService) sanitizeDuplicateRestoreEnabled() bool {
 	return s != nil && s.config != nil && s.config.SanitizeDuplicateRestore
 }
 
+// sanitizePartialGracefulEnabled reports whether a response that already put
+// content on the wire may be closed with a finish frame instead of an error
+// frame. The sanitizer still refuses to invent content; it only stops an
+// otherwise complete answer from ending the client's turn with a hard error.
+func (s *ProxyService) sanitizePartialGracefulEnabled() bool {
+	return s != nil && s.config != nil && s.config.SanitizePartialGraceful
+}
+
 // sanitizeRequestHistory removes reasoning replay and leaked chain-of-thought
 // from the assistant messages before the request is sent upstream. This is the
 // other half of the fix: sanitizing only the response leaves the model staring
@@ -181,6 +189,27 @@ func (s *ProxyService) streamDirectSanitized(reader io.Reader, writer io.Writer,
 					if failure == nil {
 						failure = errThinkAsContent
 					}
+					// A tool call already reached the client. Failing over on a
+					// "retryable" verdict would append a second call to the same
+					// message, so this is partial content now: keep what the client
+					// has and close the stream instead of switching endpoints.
+					if rewriter.ForwardedToolCalls() && retryableVerdict(failure) {
+						failure = errSanitizePartial
+					}
+					// Bytes already reached the client and the upstream closed the
+					// stream cleanly: the answer is suspect, but it is also the only
+					// thing the caller has. Closing it with an error frame ends the
+					// whole agent turn, which is worse than an answer that repeats
+					// some of the reasoning it already showed. A genuinely broken
+					// stream still reports STREAM_TRUNCATED below.
+					if errors.Is(failure, errSanitizePartial) && s.sanitizePartialGracefulEnabled() && !outcome.Failed() {
+						writeGracefulFinish(writer, flusher, rewriter.Meta())
+						reason := "closed a partial answer with a finish frame"
+						log.Warnf("[Sanitize] %s (%d bytes forwarded, notes=%s)", reason, bytesWritten, strings.Join(notes, ","))
+						s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, true,
+							"sanitize_partial_graceful [notes: "+strings.Join(notes, ",")+"]")
+						return nil
+					}
 					s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, false,
 						sanitizeLogReason(failure, notes))
 					log.Warnf("[Sanitize] rejected stream (%d bytes forwarded): %v (notes=%s, finish_ok=%v)",
@@ -222,6 +251,14 @@ func sanitizeLogReason(failure error, notes []string) string {
 	return failure.Error() + " [notes: " + strings.Join(notes, ",") + "]"
 }
 
+// retryableVerdict reports whether the caller would normally fail over on this
+// verdict. A verdict that is not about a delivered answer can only be retried
+// while nothing has reached the client.
+func retryableVerdict(err error) bool {
+	return errors.Is(err, errThinkAsContent) || errors.Is(err, errEmptyUpstream) ||
+		errors.Is(err, errDsmlUnparsed) || errors.Is(err, errTruncatedThinking)
+}
+
 // writeRestoredEvents emits the withheld content as a normal answer and closes
 // the stream with finish_reason=stop.
 func writeRestoredEvents(writer io.Writer, flusher http.Flusher, meta map[string]any, events []sanitize.Event) {
@@ -248,6 +285,31 @@ func writeRestoredEvents(writer io.Writer, flusher http.Flusher, meta map[string
 	if b, err := json.Marshal(content); err == nil {
 		io.WriteString(writer, "data: "+string(b)+"\n\n")
 	}
+	finish := map[string]any{
+		"id":      meta["id"],
+		"object":  "chat.completion.chunk",
+		"created": meta["created"],
+		"model":   meta["model"],
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": "stop",
+		}},
+	}
+	if b, err := json.Marshal(finish); err == nil {
+		io.WriteString(writer, "data: "+string(b)+"\n\n")
+	}
+	io.WriteString(writer, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+// writeGracefulFinish closes a stream whose content already reached the client
+// but whose sanitizer verdict was a rejection. It emits only the terminator —
+// no invented content, no second answer — so an SSE client sees a finished
+// message instead of an error object that kills the turn.
+func writeGracefulFinish(writer io.Writer, flusher http.Flusher, meta map[string]any) {
 	finish := map[string]any{
 		"id":      meta["id"],
 		"object":  "chat.completion.chunk",

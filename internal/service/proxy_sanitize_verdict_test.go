@@ -29,6 +29,9 @@ func newSanitizeProxyOpts(t *testing.T, thinking, restore bool) (*RouteService, 
 		LocalAPIKey:              "sk-test",
 		SanitizeThinking:         thinking,
 		SanitizeDuplicateRestore: restore,
+		// Mirror LoadConfig: a stream that already reached the client is closed
+		// with a finish frame instead of an error object.
+		SanitizePartialGraceful: true,
 	})
 }
 
